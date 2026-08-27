@@ -1,0 +1,88 @@
+{
+    "name": "nativephp/mobile-ota",
+    "description": "Over-the-air PHP payload updates for NativePHP Mobile",
+    "namespace": "Ota",
+    "keywords": [
+        "ota",
+        "updates"
+    ],
+    "category": "utilities",
+    "license": "MIT",
+    "pricing": {
+        "type": "free"
+    },
+    "author": {
+        "name": "NativePHP",
+        "email": "support@nativephp.com"
+    },
+    "platforms": [
+        "android",
+        "ios"
+    ],
+    "bridge_functions": [
+        {
+            "name": "Ota.Check",
+            "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Check",
+            "ios": "OtaFunctions.Check",
+            "description": "Ask Bifrost GET /api/apps/{uuid}/ota whether an update is available"
+        },
+        {
+            "name": "Ota.Download",
+            "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Download",
+            "ios": "OtaFunctions.Download",
+            "description": "Download an OTA zip to core updates/pending.zip for next-boot apply"
+        },
+        {
+            "name": "Ota.Apply",
+            "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Apply",
+            "ios": "OtaFunctions.Apply",
+            "description": "Queue the pending zip for core to extract on the next boot"
+        },
+        {
+            "name": "Ota.Rollback",
+            "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Rollback",
+            "ios": "OtaFunctions.Rollback",
+            "description": "Re-drop the last pending zip as updates/pending.zip for next-boot apply"
+        },
+        {
+            "name": "Ota.GetStatus",
+            "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.GetStatus",
+            "ios": "OtaFunctions.GetStatus",
+            "description": "Last downloaded version and whether a pending zip is queued for next boot"
+        },
+        {
+            "name": "Ota.Prompt",
+            "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Prompt",
+            "ios": "OtaFunctions.Prompt",
+            "description": "Native yes/no dialog when an update is available"
+        }
+    ],
+    "android": {
+        "min_version": 26,
+        "permissions": [
+            "android.permission.INTERNET",
+            "android.permission.ACCESS_NETWORK_STATE"
+        ],
+        "dependencies": {
+            "implementation": []
+        }
+    },
+    "ios": {
+        "min_version": "18.2",
+        "dependencies": {
+            "swift_packages": [],
+            "pods": []
+        }
+    },
+    "secrets": [],
+    "events": [
+        "Nativephp\\MobileOta\\Events\\UpdateAvailable",
+        "Nativephp\\MobileOta\\Events\\UpdateDownloaded",
+        "Nativephp\\MobileOta\\Events\\UpdateApplied",
+        "Nativephp\\MobileOta\\Events\\UpdateFailed",
+        "Nativephp\\MobileOta\\Events\\RolledBack"
+    ],
+    "hooks": {
+        "copy_assets": "nativephp:ota:copy-assets"
+    }
+}

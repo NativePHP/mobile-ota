@@ -1,0 +1,48 @@
+{
+    "name": "nativephp/mobile-ota",
+    "description": "Over-the-air PHP payload updates for NativePHP Mobile",
+    "type": "nativephp-plugin",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Bifrost Technology, LLC",
+            "email": "support@nativephp.com"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "nativephp/mobile": "^3.0 || ^4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Nativephp\\MobileOta\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Nativephp\\MobileOta\\OtaServiceProvider"
+            ]
+        },
+        "nativephp": {
+            "manifest": "nativephp.json"
+        }
+    },
+    "require-dev": {
+        "orchestra/testbench": "^10.0",
+        "pestphp/pest": "^2.7|^3.0|^4.0"
+    },
+    "scripts": {
+        "test": "pest"
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\": "tests/"
+        }
+    }
+}
