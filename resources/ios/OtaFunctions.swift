@@ -27,6 +27,9 @@ enum OtaFunctions {
 
     private static var pendingZip: URL { updatesDirectory.appendingPathComponent("pending.zip") }
 
+    /// Written after the zip, so its absence marks an interrupted download.
+    private static var pendingManifest: URL { updatesDirectory.appendingPathComponent("pending.json") }
+
     private static var installedVersion: String {
         get {
             if let s = UserDefaults.standard.string(forKey: versionKey), !s.isEmpty {
@@ -105,6 +108,22 @@ enum OtaFunctions {
                 }
 
                 try body.write(to: OtaFunctions.pendingZip, options: .atomic)
+
+                // What the server said about these bytes, written after them:
+                // core treats its absence as an interrupted download, and moves
+                // it into the app as ota.json once the payload is applied. The
+                // signed download URL is deliberately not persisted.
+                if let release = parameters["release"] as? String, !release.isEmpty {
+                    var manifest: [String: Any] = ["release_uuid": release]
+                    for key in ["sha256", "size", "commit", "published_at", "arc", "shell_fingerprint"] {
+                        if let value = parameters[key], !(value is NSNull) {
+                            manifest[key] = value
+                        }
+                    }
+                    if let data = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys]) {
+                        try? data.write(to: OtaFunctions.pendingManifest, options: .atomic)
+                    }
+                }
                 if let version = OtaFunctions.versionString(from: parameters) {
                     OtaFunctions.installedVersion = version
                 }
@@ -359,6 +378,8 @@ enum OtaFunctions {
         let releaseUuid = releaseBody["uuid"] as? String ?? ""
         let sha256 = releaseBody["sha256"] as? String ?? ""
         let size = (releaseBody["size"] as? NSNumber)?.intValue ?? 0
+        let commit = releaseBody["commit"] as? String ?? ""
+        let publishedAt = releaseBody["published_at"] as? String ?? ""
         let downloadUrl = body["download_url"] as? String ?? ""
         let available = (upToDate == false) && !downloadUrl.isEmpty && !releaseUuid.isEmpty
 
@@ -370,6 +391,8 @@ enum OtaFunctions {
             "release": releaseUuid,
             "sha256": sha256,
             "size": size,
+            "commit": commit,
+            "published_at": publishedAt,
             "download_url": downloadUrl,
             "url": downloadUrl,
             "version": releaseUuid,
