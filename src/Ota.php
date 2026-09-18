@@ -94,6 +94,9 @@ class Ota
             'fingerprint' => $identity['shell_fingerprint'],
             'algorithm' => $identity['fingerprint_algorithm'],
             'release' => $identity['release_uuid'],
+            // What this shell shipped with: a release published before it is
+            // already inside the app, and installing it would go backwards.
+            'shell_built_at' => (string) config('nativephp-ota.shell_built_at'),
             'version' => $this->currentVersion(),
         ]);
 
@@ -119,6 +122,14 @@ class Ota
 
         if (empty($check['available']) || empty($url)) {
             return $check;
+        }
+
+        // Belt and braces for the same rule the server applies: never install a
+        // release older than the code this shell was built with.
+        if ($this->predatesShell($check['published_at'] ?? null)) {
+            UpdateFailed::dispatch('download', 'That release is older than the installed app.');
+
+            return [...$check, 'available' => false, 'reason' => 'older than the installed app'];
         }
 
         $version = $check['current_version'] ?? $check['version'] ?? '0';
@@ -218,6 +229,25 @@ class Ota
     }
 
 
+
+    /**
+     * A release published before this shell was built is already inside it, so
+     * installing it would go backwards. The server applies the same rule; this
+     * is the client refusing to be walked back regardless.
+     */
+    private function predatesShell(?string $publishedAt): bool
+    {
+        $builtAt = config('nativephp-ota.shell_built_at');
+
+        if (! $builtAt || ! $publishedAt) {
+            return false;
+        }
+
+        $published = strtotime($publishedAt);
+        $built = strtotime((string) $builtAt);
+
+        return $published !== false && $built !== false && $published <= $built;
+    }
 
     protected function call(string $method, array $params = []): ?array
     {
