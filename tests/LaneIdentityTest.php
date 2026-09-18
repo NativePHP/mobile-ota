@@ -149,3 +149,51 @@ it('prefers configuration over the manifest for the app id', function () {
 
     expect(app(Ota::class)->identity()['project_uuid'])->toBe('configured-uuid');
 });
+
+it('tells the lane what the shell already contains', function () {
+    config(['nativephp-ota.shell_built_at' => '2026-09-18T12:00:00+00:00']);
+    $this->bridge->respondTo('Ota.Check', ['available' => false, 'upToDate' => true]);
+
+    app(Ota::class)->check();
+
+    expect($this->bridge->callsTo('Ota.Check')[0]['params']['shell_built_at'])
+        ->toBe('2026-09-18T12:00:00+00:00');
+});
+
+it('refuses a release older than the installed app', function () {
+    config(['nativephp-ota.shell_built_at' => '2026-09-18T12:00:00+00:00']);
+
+    $this->bridge->respondTo('Ota.Check', [
+        'available' => true,
+        'upToDate' => false,
+        'release' => 'older-release',
+        'published_at' => '2026-09-18T09:00:00+00:00',
+        'download_url' => 'https://example.com/laravel_bundle.zip',
+        'url' => 'https://example.com/laravel_bundle.zip',
+    ]);
+
+    $result = app(Ota::class)->downloadAndApply();
+
+    expect($result['available'])->toBeFalse()
+        ->and($result['reason'])->toBe('older than the installed app')
+        ->and($this->bridge->callsTo('Ota.Download'))->toBeEmpty();
+});
+
+it('installs a release newer than the installed app', function () {
+    config(['nativephp-ota.shell_built_at' => '2026-09-18T09:00:00+00:00']);
+
+    $this->bridge->respondTo('Ota.Check', [
+        'available' => true,
+        'upToDate' => false,
+        'release' => 'newer-release',
+        'published_at' => '2026-09-18T12:00:00+00:00',
+        'download_url' => 'https://example.com/laravel_bundle.zip',
+        'url' => 'https://example.com/laravel_bundle.zip',
+    ]);
+    $this->bridge->respondTo('Ota.Download', ['success' => true, 'queued' => true]);
+    $this->bridge->respondTo('Ota.Apply', ['success' => true, 'queued' => true, 'applyOnNextBoot' => true]);
+
+    app(Ota::class)->downloadAndApply();
+
+    expect($this->bridge->callsTo('Ota.Download'))->not->toBeEmpty();
+});
