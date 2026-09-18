@@ -14,6 +14,10 @@ return [
 
     'shell_fingerprint' => env('NATIVEPHP_OTA_SHELL_FINGERPRINT'),
 
+    // Written into a payload by the builder, so it is absent in a bundled app
+    // and present in one running an update.
+    'release_uuid' => env('NATIVEPHP_OTA_RELEASE_UUID'),
+
     'fingerprint_algorithm' => env('NATIVEPHP_OTA_FINGERPRINT_ALGORITHM', 1),
 
     // Bifrost-hosted delivery is Hela and up. Point this at your own URL for BYO bucket.

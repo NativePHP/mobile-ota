@@ -44,23 +44,37 @@ class Ota
      */
     public function identity(): array
     {
-        $manifest = [];
+        $manifest = $this->manifest();
+
+        // Configuration first: the builder stamps the shell's identity into the
+        // app's environment, and a payload overwrites it with its own. The
+        // manifest answers for payloads published before that, where ota.json
+        // was the only thing describing them.
+        return [
+            'release_uuid' => config('nativephp-ota.release_uuid') ?: ($manifest['release_uuid'] ?? null),
+            'project_uuid' => config('nativephp-ota.project_uuid') ?: ($manifest['app_id'] ?? null),
+            'arc' => (string) (config('nativephp-ota.arc') ?: ($manifest['arc'] ?? 'staging')),
+            'shell_fingerprint' => config('nativephp-ota.shell_fingerprint') ?: ($manifest['shell_fingerprint'] ?? null),
+            'fingerprint_algorithm' => (string) (config('nativephp-ota.fingerprint_algorithm')
+                ?: ($manifest['fingerprint_algorithm'] ?? 1)),
+        ];
+    }
+
+    /**
+     * What the payload says about itself. Present only once an update has been
+     * applied — the bundled app ships without one.
+     *
+     * @return array<string, mixed>
+     */
+    public function manifest(): array
+    {
         $path = base_path('ota.json');
 
-        if (is_file($path)) {
-            $manifest = json_decode((string) file_get_contents($path), true) ?: [];
+        if (! is_file($path)) {
+            return [];
         }
 
-        return [
-            'release_uuid' => $manifest['release_uuid'] ?? null,
-            // A payload built before the builder stamped these into .env still
-            // names the app it belongs to, so a device that took such an
-            // update can keep asking for the next one.
-            'project_uuid' => config('nativephp-ota.project_uuid') ?: ($manifest['app_id'] ?? null),
-            'arc' => $manifest['arc'] ?? (string) config('nativephp-ota.arc'),
-            'shell_fingerprint' => $manifest['shell_fingerprint'] ?? config('nativephp-ota.shell_fingerprint'),
-            'fingerprint_algorithm' => (string) ($manifest['fingerprint_algorithm'] ?? config('nativephp-ota.fingerprint_algorithm')),
-        ];
+        return json_decode((string) file_get_contents($path), true) ?: [];
     }
 
     public function currentRelease(): ?string
@@ -112,9 +126,14 @@ class Ota
         $downloaded = $this->call('Ota.Download', [
             'url' => $url,
             'version' => $version,
-            // Checked against the bytes before they are queued for extraction.
+            // Checked against the bytes before they are queued for extraction,
+            // then recorded beside them so the applied payload carries what the
+            // server said about the release it is.
+            'release' => $check['release'] ?? null,
             'sha256' => $check['sha256'] ?? null,
             'size' => $check['size'] ?? null,
+            'commit' => $check['commit'] ?? null,
+            'published_at' => $check['published_at'] ?? null,
         ]);
 
         if (! $downloaded || empty($downloaded['success'])) {

@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.content.SharedPreferences
 import androidx.fragment.app.FragmentActivity
+import com.nativephp.mobile.bridge.BridgeError
 import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.bridge.BridgeResponse
 import org.json.JSONObject
@@ -36,6 +37,9 @@ object OtaFunctions {
         File(appStorageDir(context), "updates").apply { mkdirs() }
 
     private fun pendingZip(context: Context) = File(updatesDir(context), "pending.zip")
+
+    // Written after the zip, so its absence marks an interrupted download.
+    private fun pendingManifest(context: Context) = File(updatesDir(context), "pending.json")
 
     private fun installedVersion(context: Context): String {
         val p = prefs(context)
@@ -83,13 +87,43 @@ object OtaFunctions {
     class Download(private val context: Context) : BridgeFunction {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
             val url = parameters["url"] as? String
-                ?: return BridgeResponse.error("url is required")
+                ?: return BridgeResponse.error(BridgeError.InvalidParameters("url is required"))
             return runCatching {
                 backupPendingIfPresent(context)
                 val pending = pendingZip(context)
-                pending.outputStream().use { out ->
-                    URL(url).openStream().use { it.copyTo(out) }
+                val bytes = URL(url).openStream().use { it.readBytes() }
+
+                // A payload that does not match what the server described is not
+                // the release we were offered, so it never reaches the location
+                // core extracts from.
+                val expectedSha = parameters["sha256"] as? String
+                if (!expectedSha.isNullOrBlank()) {
+                    val actual = java.security.MessageDigest.getInstance("SHA-256")
+                        .digest(bytes)
+                        .joinToString("") { "%02x".format(it) }
+                    if (!actual.equals(expectedSha, ignoreCase = true)) {
+                        return BridgeResponse.error(BridgeError.ExecutionFailed("checksum mismatch"))
+                    }
                 }
+                val expectedSize = (parameters["size"] as? Number)?.toInt() ?: 0
+                if (expectedSize > 0 && bytes.size != expectedSize) {
+                    return BridgeResponse.error(BridgeError.ExecutionFailed("size mismatch: expected $expectedSize, got ${bytes.size}"))
+                }
+
+                pending.writeBytes(bytes)
+
+                // What the server said about these bytes, written after them:
+                // core treats its absence as an interrupted download, and moves
+                // it into the app as ota.json once the payload is applied. The
+                // signed download URL is deliberately not persisted.
+                (parameters["release"] as? String)?.takeIf { it.isNotBlank() }?.let { release ->
+                    val manifest = JSONObject().put("release_uuid", release)
+                    for (key in listOf("sha256", "size", "commit", "published_at", "arc", "shell_fingerprint")) {
+                        parameters[key]?.let { manifest.put(key, it) }
+                    }
+                    pendingManifest(context).writeText(manifest.toString(2))
+                }
+
                 when (val v = parameters["version"]) {
                     is String -> if (v.isNotEmpty()) storeVersion(context, v)
                     is Number -> storeVersion(context, v.toString())
@@ -100,7 +134,7 @@ object OtaFunctions {
                     "queued" to true,
                     "applyOnNextBoot" to true
                 ))
-            }.getOrElse { BridgeResponse.error(it.message ?: "download failed") }
+            }.getOrElse { BridgeResponse.error(BridgeError.ExecutionFailed(it.message ?: "download failed")) }
         }
     }
 
@@ -108,7 +142,7 @@ object OtaFunctions {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
             val pending = pendingZip(context)
             if (!pending.exists()) {
-                return BridgeResponse.error("no pending payload")
+                return BridgeResponse.error(BridgeError.ExecutionFailed("no pending payload"))
             }
             val version = versionParam(parameters, context)
             storeVersion(context, version)
@@ -130,7 +164,7 @@ object OtaFunctions {
             val pending = pendingZip(context)
             val previous = previousZip(context)
             if (!previous.exists()) {
-                return BridgeResponse.error("no previous payload")
+                return BridgeResponse.error(BridgeError.ExecutionFailed("no previous payload"))
             }
             val tmp = File(otaDir(context), "swap.zip")
             if (pending.exists()) pending.copyTo(tmp, overwrite = true)
@@ -234,15 +268,25 @@ object OtaFunctions {
     private fun checkForUpdate(context: Context, parameters: Map<String, Any>): Map<String, Any> {
         val endpoint = parameters["endpoint"] as? String
         val project = parameters["project"] as? String
+        val arc = parameters["arc"] as? String
+        val fingerprint = parameters["fingerprint"] as? String
+        val algorithm = parameters["algorithm"] as? String ?: "1"
+        val release = parameters["release"] as? String
         val version = versionParam(parameters, context)
-        if (endpoint.isNullOrBlank() || project.isNullOrBlank()) {
-            return unavailable(version, "missing endpoint or project")
+
+        if (endpoint.isNullOrBlank() || project.isNullOrBlank() || arc.isNullOrBlank() || fingerprint.isNullOrBlank()) {
+            return unavailable(version, "missing endpoint, project, arc or fingerprint")
         }
         if (!isOnline(context)) {
             return unavailable(version, "offline")
         }
+
+        // The shell says who it is — app, arc, the fingerprint it was built
+        // against — and which release it already holds. The answer is whatever
+        // that lane points at.
         val trimmed = endpoint.trimEnd('/')
-        val url = "$trimmed/api/apps/$project/ota?version=$version"
+        val held = if (release.isNullOrBlank()) "" else "/$release"
+        val url = "$trimmed/api/v1/apps/$project/$arc/$fingerprint$held?algorithm=$algorithm"
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
         connection.setRequestProperty("Accept", "application/json")
@@ -266,26 +310,31 @@ object OtaFunctions {
             } catch (_: Exception) {
                 return unavailable(version, "json missing")
             }
-            val upToDate = parseUpToDate(body.opt("upToDate"))
-                ?: return unavailable(version, "json missing")
-            val currentVersion = if (body.has("current_version") && !body.isNull("current_version")) {
-                body.optString("current_version", "")
-            } else {
-                ""
-            }
+            val upToDate = parseUpToDate(body.opt("up_to_date"))
+                ?: return unavailable(version, "unexpected response shape")
+            val offered = body.optJSONObject("release") ?: JSONObject()
+            val releaseUuid = offered.optString("uuid", "")
             val downloadUrl = if (body.has("download_url") && !body.isNull("download_url")) {
                 body.optString("download_url", "")
             } else {
                 ""
             }
-            val available = !upToDate && downloadUrl.isNotBlank()
+            val available = !upToDate && downloadUrl.isNotBlank() && releaseUuid.isNotBlank()
+
             return BridgeResponse.success(mapOf(
                 "available" to available,
                 "upToDate" to upToDate,
-                "current_version" to currentVersion,
+                "requested" to url,
+                "status" to code,
+                "release" to releaseUuid,
+                "sha256" to offered.optString("sha256", ""),
+                "size" to offered.optInt("size", 0),
+                "commit" to offered.optString("commit", ""),
+                "published_at" to offered.optString("published_at", ""),
                 "download_url" to downloadUrl,
-                "version" to currentVersion,
-                "url" to downloadUrl
+                "url" to downloadUrl,
+                "version" to releaseUuid,
+                "current_version" to releaseUuid
             ))
         } catch (e: Exception) {
             return unavailable(version, e.message ?: "check failed")

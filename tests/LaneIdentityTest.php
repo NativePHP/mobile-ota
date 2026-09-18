@@ -43,13 +43,14 @@ it('describes the shell it shipped with when no update has been applied', functi
     ]);
 });
 
-it('describes the payload it is running once one has been applied', function () {
-    file_put_contents($this->manifest, json_encode([
-        'release_uuid' => '01a0b243-de72-7057-b366-f72a7ae05971',
-        'arc' => 'staging',
-        'shell_fingerprint' => str_repeat('b', 64),
-        'fingerprint_algorithm' => '2',
-    ]));
+it('reads the identity a payload stamped into the environment', function () {
+    // A payload ships its own .env, so once one is applied the app's
+    // configuration *is* the payload's identity.
+    config([
+        'nativephp-ota.release_uuid' => '01a0b243-de72-7057-b366-f72a7ae05971',
+        'nativephp-ota.shell_fingerprint' => str_repeat('b', 64),
+        'nativephp-ota.fingerprint_algorithm' => 2,
+    ]);
 
     expect(app(Ota::class)->identity())->toMatchArray([
         'release_uuid' => '01a0b243-de72-7057-b366-f72a7ae05971',
@@ -58,13 +59,32 @@ it('describes the payload it is running once one has been applied', function () 
     ])->and(app(Ota::class)->currentRelease())->toBe('01a0b243-de72-7057-b366-f72a7ae05971');
 });
 
-it('asks with the identity rather than a version', function () {
+it('falls back to the manifest for a payload published before the builder stamped it', function () {
+    config(['nativephp-ota.release_uuid' => null, 'nativephp-ota.shell_fingerprint' => null]);
+
     file_put_contents($this->manifest, json_encode([
-        'release_uuid' => 'held-release',
-        'arc' => 'staging',
+        'release_uuid' => 'older-release',
         'shell_fingerprint' => str_repeat('c', 64),
-        'fingerprint_algorithm' => '1',
     ]));
+
+    expect(app(Ota::class)->identity())->toMatchArray([
+        'release_uuid' => 'older-release',
+        'shell_fingerprint' => str_repeat('c', 64),
+    ]);
+});
+
+it('prefers the environment over a manifest left behind', function () {
+    config(['nativephp-ota.release_uuid' => 'from-env']);
+    file_put_contents($this->manifest, json_encode(['release_uuid' => 'stale-manifest']));
+
+    expect(app(Ota::class)->currentRelease())->toBe('from-env');
+});
+
+it('asks with the identity rather than a version', function () {
+    config([
+        'nativephp-ota.release_uuid' => 'held-release',
+        'nativephp-ota.shell_fingerprint' => str_repeat('c', 64),
+    ]);
 
     $this->bridge->respondTo('Ota.Check', ['available' => false, 'upToDate' => true]);
 
