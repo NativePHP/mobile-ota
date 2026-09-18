@@ -286,7 +286,9 @@ object OtaFunctions {
         // that lane points at.
         val trimmed = endpoint.trimEnd('/')
         val held = if (release.isNullOrBlank()) "" else "/$release"
-        val url = "$trimmed/api/v1/apps/$project/$arc/$fingerprint$held?algorithm=$algorithm"
+        val builtAt = (parameters["shell_built_at"] as? String)?.takeIf { it.isNotBlank() }
+        val baseline = builtAt?.let { "&shell_built_at=" + java.net.URLEncoder.encode(it, "UTF-8") } ?: ""
+        val url = "$trimmed/api/v1/apps/$project/$arc/$fingerprint$held?algorithm=$algorithm$baseline"
         val connection = URL(url).openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
         connection.setRequestProperty("Accept", "application/json")

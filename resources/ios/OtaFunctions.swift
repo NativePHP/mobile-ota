@@ -322,6 +322,14 @@ enum OtaFunctions {
         }
         path += "?algorithm=\(algorithm)"
 
+        // What the shell already contains, so the lane does not offer it a
+        // release published before its own code.
+        if let builtAt = parameters["shell_built_at"] as? String,
+           !builtAt.isEmpty,
+           let encoded = builtAt.addingPercentEncoding(withAllowedCharacters: .alphanumerics) {
+            path += "&shell_built_at=\(encoded)"
+        }
+
         guard let url = URL(string: path) else {
             return unavailable(version: version, reason: "invalid endpoint")
         }

@@ -18,6 +18,10 @@ return [
     // and present in one running an update.
     'release_uuid' => env('NATIVEPHP_OTA_RELEASE_UUID'),
 
+    // What the shell already contains. Restored from the shell's own metadata
+    // after an update, so it describes the binary rather than the payload.
+    'shell_built_at' => env('NATIVEPHP_OTA_SHELL_BUILT_AT'),
+
     'fingerprint_algorithm' => env('NATIVEPHP_OTA_FINGERPRINT_ALGORITHM', 1),
 
     // Bifrost-hosted delivery is Hela and up. Point this at your own URL for BYO bucket.
