@@ -333,17 +333,26 @@ enum OtaFunctions {
         }.resume()
         semaphore.wait()
 
+        // The request is reported back either way: a failed check is nearly
+        // always the URL being different from what you assumed.
+        func failed(_ reason: String) -> [String: Any] {
+            var payload = unavailable(version: version, reason: reason)
+            payload["requested"] = url.absoluteString
+            payload["status"] = statusCode
+            return payload
+        }
+
         if let requestError {
-            return unavailable(version: version, reason: requestError.localizedDescription)
+            return failed(requestError.localizedDescription)
         }
         if statusCode < 200 || statusCode >= 300 {
-            return unavailable(version: version, reason: "http \(statusCode)")
+            return failed("http \(statusCode)")
         }
         if !parsedJson {
-            return unavailable(version: version, reason: "json missing")
+            return failed("json missing")
         }
         guard let upToDate = parseUpToDate(body["up_to_date"]) else {
-            return unavailable(version: version, reason: "json missing")
+            return failed("unexpected response shape")
         }
 
         let releaseBody = body["release"] as? [String: Any] ?? [:]
@@ -356,6 +365,8 @@ enum OtaFunctions {
         return BridgeResponse.success(data: [
             "available": available,
             "upToDate": upToDate,
+            "requested": url.absoluteString,
+            "status": statusCode,
             "release": releaseUuid,
             "sha256": sha256,
             "size": size,
