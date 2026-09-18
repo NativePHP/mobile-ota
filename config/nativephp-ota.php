@@ -6,6 +6,16 @@ return [
 
     'project_uuid' => env('NATIVEPHP_OTA_PROJECT_UUID'),
 
+    // Which shells a release is meant for, and which channel to follow. Both
+    // describe the installed shell, so they come from the build that produced
+    // it — ota.json once an update has been applied, and these values before
+    // that.
+    'arc' => env('NATIVEPHP_OTA_ARC', 'staging'),
+
+    'shell_fingerprint' => env('NATIVEPHP_OTA_SHELL_FINGERPRINT'),
+
+    'fingerprint_algorithm' => env('NATIVEPHP_OTA_FINGERPRINT_ALGORITHM', 1),
+
     // Bifrost-hosted delivery is Hela and up. Point this at your own URL for BYO bucket.
     'endpoint' => env('NATIVEPHP_OTA_ENDPOINT'),
 
