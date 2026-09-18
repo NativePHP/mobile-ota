@@ -35,12 +35,47 @@ class Ota
         ];
     }
 
+    /**
+     * The payload describes itself: a bundle that arrived over the air carries
+     * ota.json, so after the first update the shell's own identity is whatever
+     * it is running, not what it shipped with.
+     *
+     * @return array{release_uuid: ?string, arc: string, shell_fingerprint: ?string, fingerprint_algorithm: string}
+     */
+    public function identity(): array
+    {
+        $manifest = [];
+        $path = base_path('ota.json');
+
+        if (is_file($path)) {
+            $manifest = json_decode((string) file_get_contents($path), true) ?: [];
+        }
+
+        return [
+            'release_uuid' => $manifest['release_uuid'] ?? null,
+            'arc' => $manifest['arc'] ?? (string) config('nativephp-ota.arc'),
+            'shell_fingerprint' => $manifest['shell_fingerprint'] ?? config('nativephp-ota.shell_fingerprint'),
+            'fingerprint_algorithm' => (string) ($manifest['fingerprint_algorithm'] ?? config('nativephp-ota.fingerprint_algorithm')),
+        ];
+    }
+
+    public function currentRelease(): ?string
+    {
+        return $this->identity()['release_uuid'];
+    }
+
     public function check(): array
     {
+        $identity = $this->identity();
+
         $result = $this->call('Ota.Check', [
             'endpoint' => config('nativephp-ota.endpoint'),
             'project' => config('nativephp-ota.project_uuid'),
             'token' => config('nativephp-ota.token'),
+            'arc' => $identity['arc'],
+            'fingerprint' => $identity['shell_fingerprint'],
+            'algorithm' => $identity['fingerprint_algorithm'],
+            'release' => $identity['release_uuid'],
             'version' => $this->currentVersion(),
         ]);
 
@@ -73,6 +108,9 @@ class Ota
         $downloaded = $this->call('Ota.Download', [
             'url' => $url,
             'version' => $version,
+            // Checked against the bytes before they are queued for extraction.
+            'sha256' => $check['sha256'] ?? null,
+            'size' => $check['size'] ?? null,
         ]);
 
         if (! $downloaded || empty($downloaded['success'])) {

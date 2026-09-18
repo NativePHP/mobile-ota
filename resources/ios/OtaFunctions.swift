@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Network
 import UIKit
@@ -90,6 +91,19 @@ enum OtaFunctions {
                         "error": "download failed (HTTP \(statusCode)) \(snippet)"
                     ]
                 }
+                // A payload that does not match what the server described is
+                // not the release we were offered, so it never reaches the
+                // location core extracts from.
+                if let expected = parameters["sha256"] as? String, !expected.isEmpty {
+                    let actual = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+                    if actual != expected.lowercased() {
+                        return ["success": false, "error": "checksum mismatch"]
+                    }
+                }
+                if let expected = (parameters["size"] as? NSNumber)?.intValue, expected > 0, body.count != expected {
+                    return ["success": false, "error": "size mismatch: expected \(expected), got \(body.count)"]
+                }
+
                 try body.write(to: OtaFunctions.pendingZip, options: .atomic)
                 if let version = OtaFunctions.versionString(from: parameters) {
                     OtaFunctions.installedVersion = version
@@ -266,17 +280,33 @@ enum OtaFunctions {
     fileprivate static func checkForUpdate(parameters: [String: Any]) throws -> [String: Any] {
         let endpoint = parameters["endpoint"] as? String ?? ""
         let project = parameters["project"] as? String ?? ""
+        let arc = parameters["arc"] as? String ?? ""
+        let fingerprint = parameters["fingerprint"] as? String ?? ""
+        let algorithm = parameters["algorithm"] as? String ?? "1"
+        let release = parameters["release"] as? String ?? ""
         let version = versionString(from: parameters) ?? installedVersion
-        if endpoint.isEmpty || project.isEmpty {
-            return unavailable(version: version, reason: "missing endpoint or project")
+
+        if endpoint.isEmpty || project.isEmpty || arc.isEmpty || fingerprint.isEmpty {
+            return unavailable(version: version, reason: "missing endpoint, project, arc or fingerprint")
         }
         if !isOnline() {
             return unavailable(version: version, reason: "offline")
         }
+
+        // The shell says who it is — app, arc, the fingerprint it was built
+        // against — and which release it already holds. The answer is whatever
+        // that lane points at.
         let trimmed = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: "\(trimmed)/api/apps/\(project)/ota?version=\(version)") else {
+        var path = "\(trimmed)/api/v1/apps/\(project)/\(arc)/\(fingerprint)"
+        if !release.isEmpty {
+            path += "/\(release)"
+        }
+        path += "?algorithm=\(algorithm)"
+
+        guard let url = URL(string: path) else {
             return unavailable(version: version, reason: "invalid endpoint")
         }
+
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15
@@ -284,6 +314,7 @@ enum OtaFunctions {
         if let token = parameters["token"] as? String, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+
         let semaphore = DispatchSemaphore(value: 0)
         var body: [String: Any] = [:]
         var requestError: Error?
@@ -301,6 +332,7 @@ enum OtaFunctions {
             semaphore.signal()
         }.resume()
         semaphore.wait()
+
         if let requestError {
             return unavailable(version: version, reason: requestError.localizedDescription)
         }
@@ -310,19 +342,27 @@ enum OtaFunctions {
         if !parsedJson {
             return unavailable(version: version, reason: "json missing")
         }
-        guard let upToDate = parseUpToDate(body["upToDate"]) else {
+        guard let upToDate = parseUpToDate(body["up_to_date"]) else {
             return unavailable(version: version, reason: "json missing")
         }
-        let currentVersion = body["current_version"] as? String ?? ""
+
+        let releaseBody = body["release"] as? [String: Any] ?? [:]
+        let releaseUuid = releaseBody["uuid"] as? String ?? ""
+        let sha256 = releaseBody["sha256"] as? String ?? ""
+        let size = (releaseBody["size"] as? NSNumber)?.intValue ?? 0
         let downloadUrl = body["download_url"] as? String ?? ""
-        let available = (upToDate == false) && !downloadUrl.isEmpty
+        let available = (upToDate == false) && !downloadUrl.isEmpty && !releaseUuid.isEmpty
+
         return BridgeResponse.success(data: [
             "available": available,
             "upToDate": upToDate,
-            "current_version": currentVersion,
+            "release": releaseUuid,
+            "sha256": sha256,
+            "size": size,
             "download_url": downloadUrl,
-            "version": currentVersion,
-            "url": downloadUrl
+            "url": downloadUrl,
+            "version": releaseUuid,
+            "current_version": releaseUuid
         ])
     }
 }
