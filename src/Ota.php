@@ -40,7 +40,7 @@ class Ota
      * ota.json, so after the first update the shell's own identity is whatever
      * it is running, not what it shipped with.
      *
-     * @return array{release_uuid: ?string, arc: string, shell_fingerprint: ?string, fingerprint_algorithm: string}
+     * @return array{release_uuid: ?string, project_uuid: ?string, arc: string, shell_fingerprint: ?string, fingerprint_algorithm: string}
      */
     public function identity(): array
     {
@@ -53,6 +53,10 @@ class Ota
 
         return [
             'release_uuid' => $manifest['release_uuid'] ?? null,
+            // A payload built before the builder stamped these into .env still
+            // names the app it belongs to, so a device that took such an
+            // update can keep asking for the next one.
+            'project_uuid' => config('nativephp-ota.project_uuid') ?: ($manifest['app_id'] ?? null),
             'arc' => $manifest['arc'] ?? (string) config('nativephp-ota.arc'),
             'shell_fingerprint' => $manifest['shell_fingerprint'] ?? config('nativephp-ota.shell_fingerprint'),
             'fingerprint_algorithm' => (string) ($manifest['fingerprint_algorithm'] ?? config('nativephp-ota.fingerprint_algorithm')),
@@ -70,7 +74,7 @@ class Ota
 
         $result = $this->call('Ota.Check', [
             'endpoint' => config('nativephp-ota.endpoint'),
-            'project' => config('nativephp-ota.project_uuid'),
+            'project' => $identity['project_uuid'],
             'token' => config('nativephp-ota.token'),
             'arc' => $identity['arc'],
             'fingerprint' => $identity['shell_fingerprint'],
@@ -167,9 +171,15 @@ class Ota
 
     public function prompt(): array
     {
+        $identity = $this->identity();
+
         $result = $this->call('Ota.Prompt', [
             'endpoint' => config('nativephp-ota.endpoint'),
-            'project' => config('nativephp-ota.project_uuid'),
+            'project' => $identity['project_uuid'],
+            'arc' => $identity['arc'],
+            'fingerprint' => $identity['shell_fingerprint'],
+            'algorithm' => $identity['fingerprint_algorithm'],
+            'release' => $identity['release_uuid'],
             'token' => config('nativephp-ota.token'),
             'version' => $this->currentVersion(),
         ]);

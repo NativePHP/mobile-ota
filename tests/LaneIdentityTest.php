@@ -104,3 +104,28 @@ it('hands the download the checksum to verify before queueing', function () {
         'size' => 12009013,
     ]);
 });
+
+it('falls back to the payload manifest for the app it belongs to', function () {
+    config(['nativephp-ota.project_uuid' => null]);
+
+    file_put_contents($this->manifest, json_encode([
+        'app_id' => 'f2ff44c1-7e1c-42cc-9ef9-08482ff12193',
+        'release_uuid' => 'held-release',
+        'arc' => 'staging',
+        'shell_fingerprint' => str_repeat('e', 64),
+    ]));
+
+    $this->bridge->respondTo('Ota.Check', ['available' => false, 'upToDate' => true]);
+
+    app(Ota::class)->check();
+
+    expect(app(Ota::class)->identity()['project_uuid'])->toBe('f2ff44c1-7e1c-42cc-9ef9-08482ff12193')
+        ->and($this->bridge->callsTo('Ota.Check')[0]['params']['project'])->toBe('f2ff44c1-7e1c-42cc-9ef9-08482ff12193');
+});
+
+it('prefers configuration over the manifest for the app id', function () {
+    config(['nativephp-ota.project_uuid' => 'configured-uuid']);
+    file_put_contents($this->manifest, json_encode(['app_id' => 'manifest-uuid']));
+
+    expect(app(Ota::class)->identity()['project_uuid'])->toBe('configured-uuid');
+});
