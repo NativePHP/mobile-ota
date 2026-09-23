@@ -10,6 +10,9 @@ use Nativephp\MobileOta\Events\UpdateFailed;
 
 class Ota
 {
+    /** The channels a release can be published to. Anything else is not an Arc. */
+    private const ARCS = ['testing', 'staging', 'production'];
+
     public function currentVersion(): int|string
     {
         $status = $this->status();
@@ -53,11 +56,37 @@ class Ota
         return [
             'release_uuid' => config('nativephp-ota.release_uuid') ?: ($manifest['release_uuid'] ?? null),
             'project_uuid' => config('nativephp-ota.project_uuid') ?: ($manifest['app_id'] ?? null),
-            'arc' => (string) (config('nativephp-ota.arc') ?: ($manifest['arc'] ?? 'staging')),
+            'arc' => $this->arc($manifest),
             'shell_fingerprint' => config('nativephp-ota.shell_fingerprint') ?: ($manifest['shell_fingerprint'] ?? null),
             'fingerprint_algorithm' => (string) (config('nativephp-ota.fingerprint_algorithm')
                 ?: ($manifest['fingerprint_algorithm'] ?? 1)),
         ];
+    }
+
+    /**
+     * The channel this shell follows.
+     *
+     * An Arc is the environment the shell was built for, so it reaches the app
+     * as APP_ENV. An app built before Arcs carries "local" there, which names
+     * no channel, and for those the payload's own manifest answers instead.
+     *
+     * Production is the last resort rather than staging: it is the only channel
+     * whose releases are meant for everybody, so a shell that cannot say what
+     * it is asks for the one thing it is certainly allowed to have.
+     *
+     * @param  array<string, mixed>  $manifest
+     */
+    private function arc(array $manifest): string
+    {
+        foreach ([config('nativephp-ota.arc'), $manifest['arc'] ?? null] as $candidate) {
+            $candidate = is_string($candidate) ? strtolower(trim($candidate)) : '';
+
+            if (in_array($candidate, self::ARCS, true)) {
+                return $candidate;
+            }
+        }
+
+        return 'production';
     }
 
     /**

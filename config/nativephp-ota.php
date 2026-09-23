@@ -6,11 +6,15 @@ return [
 
     'project_uuid' => env('NATIVEPHP_OTA_PROJECT_UUID'),
 
-    // Which shells a release is meant for, and which channel to follow. Both
-    // describe the installed shell, so they come from the build that produced
-    // it — ota.json once an update has been applied, and these values before
-    // that.
-    'arc' => env('NATIVEPHP_OTA_ARC', 'staging'),
+    // Which channel to follow. An Arc is the environment the shell was built
+    // for, so it arrives as APP_ENV — the builder owns that value and a project
+    // cannot set it for itself. An app built before Arcs says "local", which is
+    // no channel at all; Ota::identity() falls back for those.
+    'arc' => env('APP_ENV', 'production'),
+
+    // Which shells a release is meant for. Describes the installed shell, so it
+    // comes from the build that produced it — ota.json once an update has been
+    // applied, and this value before that.
 
     'shell_fingerprint' => env('NATIVEPHP_OTA_SHELL_FINGERPRINT'),
 

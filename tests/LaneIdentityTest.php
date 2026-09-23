@@ -197,3 +197,33 @@ it('installs a release newer than the installed app', function () {
 
     expect($this->bridge->callsTo('Ota.Download'))->not->toBeEmpty();
 });
+
+it('follows the arc the shell was built for', function () {
+    config(['nativephp-ota.arc' => 'production']);
+
+    expect(app(Ota::class)->identity()['arc'])->toBe('production');
+});
+
+it('asks for production when the app environment names no arc', function (string $appEnv) {
+    // An app built before Arcs carries APP_ENV=local, which is no channel at
+    // all. Production is the safe guess: its releases are the ones meant for
+    // everybody, so a shell that cannot say what it is never sees test code.
+    config(['nativephp-ota.arc' => $appEnv]);
+
+    expect(app(Ota::class)->identity()['arc'])->toBe('production');
+})->with(['local', 'dev', '', 'STAGING-ish']);
+
+it('reads the arc out of a payload when the environment cannot name one', function () {
+    // A shell built before Arcs that has already taken an update: the payload
+    // knows which lane it came from even though APP_ENV does not.
+    config(['nativephp-ota.arc' => 'local']);
+    file_put_contents($this->manifest, json_encode(['arc' => 'staging']));
+
+    expect(app(Ota::class)->identity()['arc'])->toBe('staging');
+});
+
+it('accepts an arc whatever case it arrives in', function () {
+    config(['nativephp-ota.arc' => 'Production']);
+
+    expect(app(Ota::class)->identity()['arc'])->toBe('production');
+});
