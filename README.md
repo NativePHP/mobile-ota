@@ -132,7 +132,7 @@ it('does nothing when the app is up to date', function () {
 
 Scripting a check:
 
-- `withOtaUpdate(string $version = '3.0.13.0.3', string $url = 'https://example.com/laravel_bundle.zip')`
+- `withOtaUpdate(string $version = '1.2.3', string $url = 'https://example.com/laravel_bundle.zip')`
 - `withOtaUpToDate(string $version = '1.0.0')`
 - `withOtaOffline()`
 - `withOtaStatus(int|string $version = '1.0.0', bool $pending = false, bool $queued = false, bool $hasPrevious = false)`
