@@ -1,13 +1,10 @@
 <?php
 
 /**
- * Prompt mode: once per launch, after the first page, ask before downloading a
- * release that is waiting for this shell.
+ * Prompt mode: once per launch, check in the background and, when a release
+ * is waiting, ask before downloading it.
  */
 
-use Illuminate\Foundation\Http\Events\RequestHandled;
-use Illuminate\Http\Request;
-use Illuminate\Http\Response;
 use Native\Mobile\Testing\FakeBridge;
 use Native\Mobile\Testing\Native;
 use Nativephp\MobileOta\Events\UpdatePromptAnswered;
@@ -34,55 +31,53 @@ beforeEach(function () {
 
     (new ReflectionProperty(Ota::class, 'prompted'))->setValue(null, false);
 
-    $this->releaseWaiting = fn (string $publishedAt = '2026-09-28T21:54:45+00:00') => $this->bridge->respondTo('Ota.Check', [
+    $this->releaseWaiting = fn () => $this->bridge->respondTo('Ota.Check', [
         'available' => true,
         'upToDate' => false,
         'release' => 'new-release',
         'sha256' => str_repeat('d', 64),
         'size' => 12009013,
-        'published_at' => $publishedAt,
+        'published_at' => '2026-09-28T21:54:45+00:00',
         'download_url' => 'https://example.com/laravel_bundle.zip',
         'url' => 'https://example.com/laravel_bundle.zip',
     ]);
-
-    $this->firstPage = fn () => event(new RequestHandled(Request::create('/'), new Response('ok')));
 });
 
-it('asks later or update when a release is waiting', function () {
-    ($this->releaseWaiting)();
+it('hands the check and the question to the native side, with who is asking', function () {
+    $this->bridge->respondTo('Ota.Prompt', ['scheduled' => true]);
 
-    expect(app(Ota::class)->prompt())->toMatchArray(['available' => true, 'prompted' => true]);
+    expect(app(Ota::class)->prompt())->toBe(['scheduled' => true]);
 
-    expect($this->bridge->callsTo('Dialog.Alert')[0]['params'])->toMatchArray([
-        'title' => 'Update available',
-        'buttons' => ['Later', 'Update'],
-        'id' => Ota::PROMPT_ID,
-        'event' => UpdatePromptAnswered::class,
-    ]);
+    // The native side checks in the background and waits for the app to be
+    // on screen, so nothing here blocks on the network or on a dialog.
+    expect($this->bridge->callsTo('Ota.Check'))->toBeEmpty()
+        ->and($this->bridge->callsTo('Ota.Prompt')[0]['params'])->toMatchArray([
+            'endpoint' => 'https://bifrost.nativephp.com',
+            'project' => 'project-uuid',
+            'arc' => 'production',
+            'fingerprint' => str_repeat('a', 64),
+            'shell_built_at' => '2026-09-28T20:00:00+00:00',
+            'title' => 'Update available',
+            'buttons' => ['Later', 'Update'],
+            'id' => Ota::PROMPT_ID,
+            'event' => UpdatePromptAnswered::class,
+        ]);
 });
 
-it('checks with the shell baseline so an older release is never offered', function () {
-    ($this->releaseWaiting)();
+it('asks once per launch', function () {
+    app(Ota::class)->onLaunch();
+    app(Ota::class)->onLaunch();
 
-    app(Ota::class)->prompt();
-
-    expect($this->bridge->callsTo('Ota.Check')[0]['params'])
-        ->toMatchArray(['shell_built_at' => '2026-09-28T20:00:00+00:00']);
+    expect($this->bridge->callsTo('Ota.Prompt'))->toHaveCount(1);
 });
 
-it('asks nothing when there is no release waiting', function () {
-    $this->bridge->respondTo('Ota.Check', ['available' => false, 'upToDate' => true]);
+it('never asks in manual mode', function () {
+    config(['nativephp-ota.mode' => 'manual']);
 
-    app(Ota::class)->prompt();
+    app(Ota::class)->onLaunch();
 
-    expect($this->bridge->callsTo('Dialog.Alert'))->toBeEmpty();
-});
-
-it('asks nothing about a release older than the installed app', function () {
-    ($this->releaseWaiting)('2026-09-28T19:00:00+00:00');
-
-    expect(app(Ota::class)->prompt())->toMatchArray(['available' => false])
-        ->and($this->bridge->callsTo('Dialog.Alert'))->toBeEmpty();
+    expect($this->bridge->callsTo('Ota.Prompt'))->toBeEmpty()
+        ->and($this->bridge->callsTo('Ota.Check'))->toBeEmpty();
 });
 
 it('downloads the release when update is tapped', function () {
@@ -115,29 +110,14 @@ it('ignores a tap on one of the app\'s own alerts', function () {
     expect($this->bridge->callsTo('Ota.Download'))->toBeEmpty();
 });
 
-it('waits for the first page before asking, then asks once per launch', function () {
-    // PHP boots before the app is on screen, and a native alert raised then is
-    // dropped, so nothing happens until a page has been served.
-    ($this->releaseWaiting)();
+it('declares the native prompt it relies on', function () {
+    $manifest = json_decode(file_get_contents(dirname(__DIR__).'/nativephp.json'), true);
+    $prompt = collect($manifest['bridge_functions'])->firstWhere('name', 'Ota.Prompt');
 
-    app(Ota::class)->onLaunch();
-
-    expect($this->bridge->callsTo('Ota.Check'))->toBeEmpty();
-
-    ($this->firstPage)();
-    ($this->firstPage)();
-
-    expect($this->bridge->callsTo('Ota.Check'))->toHaveCount(1)
-        ->and($this->bridge->callsTo('Dialog.Alert'))->toHaveCount(1);
-});
-
-it('never asks in manual mode', function () {
-    config(['nativephp-ota.mode' => 'manual']);
-    ($this->releaseWaiting)();
-
-    app(Ota::class)->onLaunch();
-    ($this->firstPage)();
-
-    expect($this->bridge->callsTo('Ota.Check'))->toBeEmpty()
-        ->and($this->bridge->callsTo('Dialog.Alert'))->toBeEmpty();
+    expect($prompt)->toMatchArray([
+        'android' => 'com.nativephp.plugins.mobile_ota.OtaFunctions.Prompt',
+        'ios' => 'OtaFunctions.Prompt',
+    ])
+        ->and(file_get_contents(dirname(__DIR__).'/resources/ios/OtaFunctions.swift'))->toContain('class Prompt: BridgeFunction')
+        ->and(file_get_contents(dirname(__DIR__).'/resources/android/OtaFunctions.kt'))->toContain('class Prompt(private val activity: FragmentActivity)');
 });

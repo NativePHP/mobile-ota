@@ -213,6 +213,76 @@ enum OtaFunctions {
         }
     }
 
+    /// Checks in the background and, when a release is waiting, asks Later /
+    /// Update once the app is actually on screen. PHP boots before that, and
+    /// an alert presented while the scene is still launching is dropped, so
+    /// the dialog waits for an active scene rather than presenting blind. The
+    /// answer goes back to PHP as the event PHP named.
+    class Prompt: BridgeFunction {
+        func execute(parameters: [String: Any]) throws -> [String: Any] {
+            let title = parameters["title"] as? String ?? "Update available"
+            let message = parameters["message"] as? String ?? ""
+            let buttons = (parameters["buttons"] as? [Any])?.compactMap { $0 as? String } ?? ["Later", "Update"]
+            let id = parameters["id"] as? String
+            let event = parameters["event"] as? String ?? ""
+
+            DispatchQueue.global(qos: .utility).async {
+                guard let check = try? OtaFunctions.checkForUpdate(parameters: parameters),
+                      let data = check["data"] as? [String: Any],
+                      data["available"] as? Bool == true else {
+                    return
+                }
+
+                OtaFunctions.presentWhenOnScreen(attemptsLeft: 120) {
+                    let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+                    for (index, label) in buttons.enumerated() {
+                        alert.addAction(UIAlertAction(title: label, style: index == 0 ? .cancel : .default) { _ in
+                            guard !event.isEmpty else { return }
+                            var payload: [String: Any] = ["index": index, "label": label]
+                            if let id { payload["id"] = id }
+                            LaravelBridge.shared.send?(event, payload)
+                        })
+                    }
+                    return alert
+                }
+            }
+
+            return BridgeResponse.success(data: ["scheduled": true])
+        }
+    }
+
+    /// Presents once there is an active scene with a key window and nothing
+    /// else being presented or dismissed, trying again every half second.
+    fileprivate static func presentWhenOnScreen(attemptsLeft: Int, _ build: @escaping () -> UIViewController) {
+        DispatchQueue.main.async {
+            if let top = topViewController() {
+                top.present(build(), animated: true)
+                return
+            }
+            guard attemptsLeft > 0 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                presentWhenOnScreen(attemptsLeft: attemptsLeft - 1, build)
+            }
+        }
+    }
+
+    fileprivate static func topViewController() -> UIViewController? {
+        guard let scene = UIApplication.shared.connectedScenes
+                  .compactMap({ $0 as? UIWindowScene })
+                  .first(where: { $0.activationState == .foregroundActive }),
+              let window = scene.windows.first(where: { $0.isKeyWindow }),
+              var top = window.rootViewController else {
+            return nil
+        }
+        while let presented = top.presentedViewController {
+            top = presented
+        }
+        if top.isBeingDismissed || top.isBeingPresented || top is UIAlertController {
+            return nil
+        }
+        return top
+    }
+
     fileprivate static func versionString(from parameters: [String: Any]) -> String? {
         if let s = parameters["version"] as? String, !s.isEmpty {
             return s

@@ -3,10 +3,16 @@ package com.nativephp.plugins.mobile_ota
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.content.SharedPreferences
 import com.nativephp.mobile.bridge.BridgeError
 import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.bridge.BridgeResponse
+import com.nativephp.mobile.utils.NativeActionCoordinator
+import androidx.fragment.app.FragmentActivity
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -195,6 +201,49 @@ object OtaFunctions {
                 "queued" to pending,
                 "applyOnNextBoot" to pending
             ))
+        }
+    }
+
+    /**
+     * Checks in the background and, when a release is waiting, asks Later /
+     * Update through core's alert coordinator, which holds the dialog until
+     * the activity can show it. The answer goes back to PHP as the event PHP
+     * named, so nothing blocks the request that asked.
+     */
+    class Prompt(private val activity: FragmentActivity) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            val title = parameters["title"] as? String ?: "Update available"
+            val message = parameters["message"] as? String ?: ""
+            val buttons = when (val raw = parameters["buttons"]) {
+                is JSONArray -> (0 until raw.length()).map { raw.optString(it) }
+                is List<*> -> raw.mapNotNull { it as? String }
+                else -> listOf("Later", "Update")
+            }.filter { it.isNotEmpty() }
+            val id = parameters["id"] as? String
+            val event = parameters["event"] as? String
+
+            Thread {
+                val data = checkForUpdate(activity, parameters)["data"] as? Map<*, *>
+                if (data?.get("available") != true) {
+                    return@Thread
+                }
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        NativeActionCoordinator.install(activity).launchAlert(
+                            title,
+                            message,
+                            buttons.toTypedArray(),
+                            buttons.mapIndexed { index, _ -> if (index == 0) "cancel" else "default" }.toTypedArray(),
+                            id,
+                            event
+                        )
+                    } catch (e: Exception) {
+                        Log.e("OtaFunctions.Prompt", "Could not show the update prompt: ${e.message}", e)
+                    }
+                }
+            }.start()
+
+            return BridgeResponse.success(mapOf("scheduled" to true))
         }
     }
 
