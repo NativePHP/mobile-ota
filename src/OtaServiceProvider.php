@@ -2,9 +2,11 @@
 
 namespace Nativephp\MobileOta;
 
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Native\Mobile\Testing\FakeBridge;
 use Nativephp\MobileOta\Commands\CopyAssetsCommand;
+use Nativephp\MobileOta\Events\UpdatePromptAnswered;
 use Nativephp\MobileOta\Facades\Ota as OtaFacade;
 use Nativephp\MobileOta\Testing\OtaMacros;
 
@@ -37,6 +39,8 @@ class OtaServiceProvider extends ServiceProvider
                 CopyAssetsCommand::class,
             ]);
         }
+
+        Event::listen(UpdatePromptAnswered::class, fn (UpdatePromptAnswered $answer) => OtaFacade::answerPrompt($answer));
 
         if (function_exists('nativephp_call') && ! $this->app->runningUnitTests()) {
             $this->app->booted(function () {

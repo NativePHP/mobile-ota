@@ -1,7 +1,8 @@
 <?php
 
 return [
-    // prompt: yes/no on launch. silent: download/apply with no dialog. manual: only Ota::check() / a button.
+    // prompt: once per launch, after the first page, ask Later / Update when a release is waiting.
+    // silent: download with no dialog. manual: only Ota::check() / a button. Any update applies on the next launch.
     'mode' => env('NATIVEPHP_OTA_MODE', 'manual'),
 
     'project_uuid' => env('NATIVEPHP_OTA_PROJECT_UUID'),

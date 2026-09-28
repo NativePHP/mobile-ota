@@ -2,16 +2,32 @@
 
 namespace Nativephp\MobileOta;
 
+use Illuminate\Foundation\Http\Events\RequestHandled;
+use Illuminate\Support\Facades\Event;
+use Native\Mobile\Facades\Dialog;
 use Nativephp\MobileOta\Events\RolledBack;
 use Nativephp\MobileOta\Events\UpdateApplied;
 use Nativephp\MobileOta\Events\UpdateAvailable;
 use Nativephp\MobileOta\Events\UpdateDownloaded;
 use Nativephp\MobileOta\Events\UpdateFailed;
+use Nativephp\MobileOta\Events\UpdatePromptAnswered;
 
 class Ota
 {
     /** The channels a release can be published to. Anything else is not an Arc. */
     private const ARCS = ['testing', 'staging', 'production'];
+
+    /** Correlates the prompt's answer with the prompt, among the app's own alerts. */
+    public const PROMPT_ID = 'nativephp-ota-update';
+
+    /** The prompt's buttons, in order. The second one takes the update. */
+    public const PROMPT_BUTTONS = ['Later', 'Update'];
+
+    /**
+     * Whether this runtime has already put the prompt on screen. In the
+     * persistent runtime PHP boots once per launch, so this is once per launch.
+     */
+    private static bool $prompted = false;
 
     public function currentVersion(): int|string
     {
@@ -228,22 +244,47 @@ class Ota
         return true;
     }
 
+    /**
+     * Ask before updating. Checks first, and only when a release is waiting
+     * shows a native Later / Update dialog. The answer comes back as
+     * UpdatePromptAnswered, which the plugin handles by downloading the
+     * release to apply on the next launch.
+     */
     public function prompt(): array
     {
-        $identity = $this->identity();
+        $check = $this->check();
 
-        $result = $this->call('Ota.Prompt', [
-            'endpoint' => config('nativephp-ota.endpoint'),
-            'project' => $identity['project_uuid'],
-            'arc' => $identity['arc'],
-            'fingerprint' => $identity['shell_fingerprint'],
-            'algorithm' => $identity['fingerprint_algorithm'],
-            'release' => $identity['release_uuid'],
-            'token' => config('nativephp-ota.token'),
-            'version' => $this->currentVersion(),
-        ]);
+        if (empty($check['available'])) {
+            return $check;
+        }
 
-        return $result ?? ['available' => false, 'accepted' => false];
+        if ($this->predatesShell($check['published_at'] ?? null)) {
+            return [...$check, 'available' => false, 'reason' => 'older than the installed app'];
+        }
+
+        Dialog::alert(
+            'Update available',
+            'A new version of this app is ready. Download it now? It will be used the next time the app starts.',
+            self::PROMPT_BUTTONS,
+        )
+            ->id(self::PROMPT_ID)
+            ->event(UpdatePromptAnswered::class)
+            ->show();
+
+        return [...$check, 'prompted' => true];
+    }
+
+    /**
+     * The prompt's answer. Only "Update" on this plugin's own prompt does
+     * anything; "Later" leaves the release for the next launch to offer again.
+     */
+    public function answerPrompt(UpdatePromptAnswered $answer): array
+    {
+        if ($answer->id !== self::PROMPT_ID || $answer->index !== array_search('Update', self::PROMPT_BUTTONS, true)) {
+            return ['accepted' => false];
+        }
+
+        return ['accepted' => true, ...$this->downloadAndApply()];
     }
 
     public function onLaunch(): void
@@ -251,13 +292,29 @@ class Ota
         $mode = config('nativephp-ota.mode', 'manual');
 
         if ($mode === 'prompt') {
-            $this->prompt();
+            $this->promptAfterFirstPage();
         } elseif ($mode === 'silent') {
             $this->downloadAndApply(silent: true);
         }
     }
 
+    /**
+     * PHP boots before the app is on screen, and a native alert raised then is
+     * dropped, so the prompt waits for the first page to be served. Once per
+     * runtime.
+     */
+    private function promptAfterFirstPage(): void
+    {
+        Event::listen(RequestHandled::class, function (): void {
+            if (self::$prompted) {
+                return;
+            }
 
+            self::$prompted = true;
+
+            $this->prompt();
+        });
+    }
 
     /**
      * A release published before this shell was built is already inside it, so

@@ -22,7 +22,6 @@ export const ota = {
     apply: (params = {}) => bridgeCall('Ota.Apply', params),
     rollback: () => bridgeCall('Ota.Rollback'),
     getStatus: () => bridgeCall('Ota.GetStatus'),
-    prompt: (params = {}) => bridgeCall('Ota.Prompt', params),
 };
 
 export default ota;

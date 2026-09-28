@@ -44,7 +44,11 @@ Set `NATIVEPHP_OTA_MODE` in your `.env`:
 | Mode | What happens |
 |---|---|
 | `manual` (default) | Nothing happens on its own. Your app decides when to check, using the methods below. |
+| `prompt` | Once per launch, after the first screen loads, the app checks for an update and asks **Later** or **Update**. **Update** downloads it, and it's applied the next time the app starts. **Later** asks again on the next launch. |
 | `silent` | The app checks for updates and downloads them automatically. A downloaded update is applied the next time the app starts. |
+
+The mode is part of the app, so set it before you ship the store build that should use it. An update can change it
+for the builds that install that update.
 
 ## Checking and applying updates yourself
 
