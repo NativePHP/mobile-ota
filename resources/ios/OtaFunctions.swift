@@ -213,29 +213,6 @@ enum OtaFunctions {
         }
     }
 
-    class Prompt: BridgeFunction {
-        func execute(parameters: [String: Any]) throws -> [String: Any] {
-            let check = try checkForUpdate(parameters: parameters)
-            let data = check["data"] as? [String: Any]
-            let available = data?["available"] as? Bool ?? false
-            if !available {
-                return BridgeResponse.success(data: ["available": false, "accepted": false])
-            }
-            let currentVersion = data?["current_version"] as? String
-                ?? data?["version"] as? String
-                ?? ""
-            return BridgeResponse.success(data: [
-                "available": true,
-                "accepted": false,
-                "version": currentVersion,
-                "current_version": currentVersion,
-                "download_url": data?["download_url"] ?? "",
-                "url": data?["url"] ?? data?["download_url"] ?? "",
-                "needsUi": true
-            ])
-        }
-    }
-
     fileprivate static func versionString(from parameters: [String: Any]) -> String? {
         if let s = parameters["version"] as? String, !s.isEmpty {
             return s

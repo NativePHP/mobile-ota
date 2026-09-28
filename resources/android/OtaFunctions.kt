@@ -1,11 +1,9 @@
 package com.nativephp.plugins.mobile_ota
 
-import android.app.AlertDialog
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.content.SharedPreferences
-import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.BridgeError
 import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.bridge.BridgeResponse
@@ -196,37 +194,6 @@ object OtaFunctions {
                 "pending" to pending,
                 "queued" to pending,
                 "applyOnNextBoot" to pending
-            ))
-        }
-    }
-
-    class Prompt(private val activity: FragmentActivity) : BridgeFunction {
-        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
-            val check = checkForUpdate(activity, parameters)
-            val data = check["data"] as? Map<*, *>
-            val available = data?.get("available") == true
-            if (!available) {
-                return BridgeResponse.success(mapOf("available" to false, "accepted" to false))
-            }
-            var accepted = false
-            activity.runOnUiThread {
-                AlertDialog.Builder(activity)
-                    .setTitle("Update available")
-                    .setMessage("Download and apply this OTA update?")
-                    .setPositiveButton("Update") { _, _ -> accepted = true }
-                    .setNegativeButton("Later", null)
-                    .show()
-            }
-            val currentVersion = (data?.get("current_version") as? String)
-                ?: (data?.get("version") as? String)
-                ?: ""
-            return BridgeResponse.success(mapOf(
-                "available" to true,
-                "accepted" to accepted,
-                "version" to currentVersion,
-                "current_version" to currentVersion,
-                "download_url" to (data?.get("download_url") ?: ""),
-                "url" to (data?.get("url") ?: data?.get("download_url") ?: "")
             ))
         }
     }

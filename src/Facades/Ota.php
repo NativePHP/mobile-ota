@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static array install(bool $silent = false, int|string|null $version = null)
  * @method static bool rollback()
  * @method static array prompt()
+ * @method static array answerPrompt(\Nativephp\MobileOta\Events\UpdatePromptAnswered $answer)
  * @method static void onLaunch()
  *
  * @see \Nativephp\MobileOta\Ota
