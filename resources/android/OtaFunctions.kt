@@ -223,8 +223,11 @@ object OtaFunctions {
             val event = parameters["event"] as? String
 
             Thread {
-                val data = checkForUpdate(activity, parameters)["data"] as? Map<*, *>
-                if (data?.get("available") != true) {
+                // Core returns bridge data unwrapped; older cores wrapped it
+                // in "data". Read either so the prompt shows on both.
+                val check = checkForUpdate(activity, parameters)
+                val data = check["data"] as? Map<*, *> ?: check
+                if (data["available"] != true) {
                     return@Thread
                 }
                 Handler(Looper.getMainLooper()).post {
