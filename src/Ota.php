@@ -2,9 +2,6 @@
 
 namespace Nativephp\MobileOta;
 
-use Illuminate\Foundation\Http\Events\RequestHandled;
-use Illuminate\Support\Facades\Event;
-use Native\Mobile\Facades\Dialog;
 use Nativephp\MobileOta\Events\RolledBack;
 use Nativephp\MobileOta\Events\UpdateApplied;
 use Nativephp\MobileOta\Events\UpdateAvailable;
@@ -24,8 +21,8 @@ class Ota
     public const PROMPT_BUTTONS = ['Later', 'Update'];
 
     /**
-     * Whether this runtime has already put the prompt on screen. In the
-     * persistent runtime PHP boots once per launch, so this is once per launch.
+     * Whether this runtime has already asked for the prompt. In the persistent
+     * runtime PHP boots once per launch, so this is once per launch.
      */
     private static bool $prompted = false;
 
@@ -245,33 +242,33 @@ class Ota
     }
 
     /**
-     * Ask before updating. Checks first, and only when a release is waiting
-     * shows a native Later / Update dialog. The answer comes back as
-     * UpdatePromptAnswered, which the plugin handles by downloading the
-     * release to apply on the next launch.
+     * Ask before updating. The check and the dialog both happen natively and
+     * in the background, so this returns straight away: the app is still
+     * launching when PHP boots, and a dialog raised then is dropped, so the
+     * native side waits until the app is on screen before asking. The answer
+     * comes back as UpdatePromptAnswered, which the plugin handles by
+     * downloading the release to apply on the next launch.
      */
     public function prompt(): array
     {
-        $check = $this->check();
+        $identity = $this->identity();
 
-        if (empty($check['available'])) {
-            return $check;
-        }
-
-        if ($this->predatesShell($check['published_at'] ?? null)) {
-            return [...$check, 'available' => false, 'reason' => 'older than the installed app'];
-        }
-
-        Dialog::alert(
-            'Update available',
-            'A new version of this app is ready. Download it now? It will be used the next time the app starts.',
-            self::PROMPT_BUTTONS,
-        )
-            ->id(self::PROMPT_ID)
-            ->event(UpdatePromptAnswered::class)
-            ->show();
-
-        return [...$check, 'prompted' => true];
+        return $this->call('Ota.Prompt', [
+            'endpoint' => config('nativephp-ota.endpoint'),
+            'project' => $identity['project_uuid'],
+            'token' => config('nativephp-ota.token'),
+            'arc' => $identity['arc'],
+            'fingerprint' => $identity['shell_fingerprint'],
+            'algorithm' => $identity['fingerprint_algorithm'],
+            'release' => $identity['release_uuid'],
+            'shell_built_at' => (string) config('nativephp-ota.shell_built_at'),
+            'version' => $this->currentVersion(),
+            'title' => 'Update available',
+            'message' => 'A new version of this app is ready. Download it now? It will be used the next time the app starts.',
+            'buttons' => self::PROMPT_BUTTONS,
+            'id' => self::PROMPT_ID,
+            'event' => UpdatePromptAnswered::class,
+        ]) ?? ['scheduled' => false];
     }
 
     /**
@@ -292,28 +289,24 @@ class Ota
         $mode = config('nativephp-ota.mode', 'manual');
 
         if ($mode === 'prompt') {
-            $this->promptAfterFirstPage();
+            $this->promptOnce();
         } elseif ($mode === 'silent') {
             $this->downloadAndApply(silent: true);
         }
     }
 
     /**
-     * PHP boots before the app is on screen, and a native alert raised then is
-     * dropped, so the prompt waits for the first page to be served. Once per
-     * runtime.
+     * Once per runtime, which in the persistent runtime is once per launch.
      */
-    private function promptAfterFirstPage(): void
+    private function promptOnce(): void
     {
-        Event::listen(RequestHandled::class, function (): void {
-            if (self::$prompted) {
-                return;
-            }
+        if (self::$prompted) {
+            return;
+        }
 
-            self::$prompted = true;
+        self::$prompted = true;
 
-            $this->prompt();
-        });
+        $this->prompt();
     }
 
     /**

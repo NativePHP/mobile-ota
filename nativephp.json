@@ -49,6 +49,12 @@
             "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.GetStatus",
             "ios": "OtaFunctions.GetStatus",
             "description": "Last downloaded version and whether a pending zip is queued for next boot"
+        },
+        {
+            "name": "Ota.Prompt",
+            "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Prompt",
+            "ios": "OtaFunctions.Prompt",
+            "description": "Check in the background and, when a release is waiting, ask Later / Update once the app is on screen"
         }
     ],
     "android": {
