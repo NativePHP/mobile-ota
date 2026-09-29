@@ -131,3 +131,19 @@ it('reads the native check result whether or not core wraps it in data', functio
     expect($swift)->toContain('let data = (check["data"] as? [String: Any]) ?? check')
         ->and($kotlin)->toContain('val data = check["data"] as? Map<*, *> ?: check');
 });
+
+it('asks once per process natively, and not for a release already queued', function () {
+    // PHP boots more than once per launch, so Ota::$prompted alone cannot
+    // stop a second dialog. The native side keeps the flag, and skips a
+    // release whose pending.zip and pending.json are already waiting.
+    foreach (['ios/OtaFunctions.swift', 'android/OtaFunctions.kt'] as $file) {
+        $source = file_get_contents(dirname(__DIR__).'/resources/'.$file);
+        $prompt = substr($source, strpos($source, 'class Prompt'));
+
+        expect($prompt)->toContain('claimPrompt()')
+            ->and($prompt)->toContain('pendingHolds(')
+            // The key the native Download writes into pending.json is the
+            // one the guard reads back.
+            ->and(substr_count($source, '"release_uuid"'))->toBeGreaterThanOrEqual(2);
+    }
+});

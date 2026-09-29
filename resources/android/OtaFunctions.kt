@@ -222,12 +222,24 @@ object OtaFunctions {
             val id = parameters["id"] as? String
             val event = parameters["event"] as? String
 
+            // Once per process. PHP boots more than once per launch (a
+            // runtime reboot, the queue worker, classic mode per request) and
+            // asks every time, so the answer to "have we asked" lives here.
+            if (!claimPrompt()) {
+                return BridgeResponse.success(mapOf("scheduled" to false, "reason" to "already asked"))
+            }
+
             Thread {
                 // Core returns bridge data unwrapped; older cores wrapped it
                 // in "data". Read either so the prompt shows on both.
                 val check = checkForUpdate(activity, parameters)
                 val data = check["data"] as? Map<*, *> ?: check
                 if (data["available"] != true) {
+                    return@Thread
+                }
+
+                // Already downloaded and waiting for the next launch.
+                if (pendingHolds(activity, data["release"] as? String ?: "")) {
                     return@Thread
                 }
                 Handler(Looper.getMainLooper()).post {
@@ -247,6 +259,26 @@ object OtaFunctions {
             }.start()
 
             return BridgeResponse.success(mapOf("scheduled" to true))
+        }
+    }
+
+    private val prompted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** True the first time it is called in this process, false after. */
+    private fun claimPrompt(): Boolean = prompted.compareAndSet(false, true)
+
+    /**
+     * Whether the queued payload is already this release: pending.zip is there
+     * and the pending.json written after it names the same release.
+     */
+    private fun pendingHolds(context: Context, release: String): Boolean {
+        if (release.isEmpty() || !pendingZip(context).isFile) return false
+        val manifest = pendingManifest(context)
+        if (!manifest.isFile) return false
+        return try {
+            JSONObject(manifest.readText()).optString("release_uuid") == release
+        } catch (_: Exception) {
+            false
         }
     }
 

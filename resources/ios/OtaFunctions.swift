@@ -226,6 +226,13 @@ enum OtaFunctions {
             let id = parameters["id"] as? String
             let event = parameters["event"] as? String ?? ""
 
+            // Once per process. PHP boots more than once per launch (a
+            // runtime reboot, the queue worker, classic mode per request) and
+            // asks every time, so the answer to "have we asked" lives here.
+            guard OtaFunctions.claimPrompt() else {
+                return BridgeResponse.success(data: ["scheduled": false, "reason": "already asked"])
+            }
+
             DispatchQueue.global(qos: .utility).async {
                 // Core returns bridge data unwrapped; older cores wrapped it
                 // in "data". Read either so the prompt shows on both.
@@ -234,6 +241,11 @@ enum OtaFunctions {
                 }
                 let data = (check["data"] as? [String: Any]) ?? check
                 guard data["available"] as? Bool == true else {
+                    return
+                }
+
+                // Already downloaded and waiting for the next launch.
+                if OtaFunctions.pendingHolds(release: data["release"] as? String ?? "") {
                     return
                 }
 
@@ -253,6 +265,30 @@ enum OtaFunctions {
 
             return BridgeResponse.success(data: ["scheduled": true])
         }
+    }
+
+    private static let promptLock = NSLock()
+    private static var prompted = false
+
+    /// True the first time it is called in this process, false after.
+    fileprivate static func claimPrompt() -> Bool {
+        promptLock.lock()
+        defer { promptLock.unlock() }
+        if prompted { return false }
+        prompted = true
+        return true
+    }
+
+    /// Whether the queued payload is already this release: pending.zip is
+    /// there and the pending.json written after it names the same release.
+    fileprivate static func pendingHolds(release: String) -> Bool {
+        guard !release.isEmpty,
+              FileManager.default.fileExists(atPath: pendingZip.path),
+              let data = try? Data(contentsOf: pendingManifest),
+              let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return manifest["release_uuid"] as? String == release
     }
 
     /// Presents once there is an active scene with a key window and nothing
