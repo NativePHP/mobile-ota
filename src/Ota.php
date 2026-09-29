@@ -273,6 +273,8 @@ class Ota
             'event' => UpdatePromptAnswered::class,
             'progress' => 'Downloading update…',
             'failed_title' => "Couldn't download the update",
+            'ready_title' => 'Update ready',
+            'ready_message' => 'Close and reopen the app to finish updating.',
             'downloaded_event' => UpdateDownloaded::class,
             'failed_event' => UpdateFailed::class,
         ]) ?? ['scheduled' => false];
