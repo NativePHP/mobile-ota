@@ -7,6 +7,8 @@
 
 use Native\Mobile\Testing\FakeBridge;
 use Native\Mobile\Testing\Native;
+use Nativephp\MobileOta\Events\UpdateDownloaded;
+use Nativephp\MobileOta\Events\UpdateFailed;
 use Nativephp\MobileOta\Events\UpdatePromptAnswered;
 use Nativephp\MobileOta\Ota;
 use Tests\TestCase;
@@ -61,6 +63,8 @@ it('hands the check and the question to the native side, with who is asking', fu
             'buttons' => ['Later', 'Update'],
             'id' => Ota::PROMPT_ID,
             'event' => UpdatePromptAnswered::class,
+            'downloaded_event' => UpdateDownloaded::class,
+            'failed_event' => UpdateFailed::class,
         ]);
 });
 
@@ -80,17 +84,18 @@ it('never asks in manual mode', function () {
         ->and($this->bridge->callsTo('Ota.Check'))->toBeEmpty();
 });
 
-it('downloads the release when update is tapped', function () {
+it('leaves the download to the native side when update is tapped', function () {
     ($this->releaseWaiting)();
-    $this->bridge->respondTo('Ota.Download', ['success' => true, 'queued' => true]);
-    $this->bridge->respondTo('Ota.Apply', ['success' => true, 'queued' => true, 'applyOnNextBoot' => true]);
 
+    // The native prompt downloads behind its own progress screen. A second
+    // download from PHP would run it twice, and on an EDGE screen would hold
+    // the PHP thread for as long as the download takes.
     event(new UpdatePromptAnswered(1, 'Update', Ota::PROMPT_ID));
 
-    expect($this->bridge->callsTo('Ota.Download')[0]['params'])->toMatchArray([
-        'url' => 'https://example.com/laravel_bundle.zip',
-        'release' => 'new-release',
-    ])->and($this->bridge->callsTo('Ota.Apply'))->toHaveCount(1);
+    expect($this->bridge->callsTo('Ota.Check'))->toBeEmpty()
+        ->and($this->bridge->callsTo('Ota.Download'))->toBeEmpty()
+        ->and(app(Ota::class)->answerPrompt(new UpdatePromptAnswered(1, 'Update', Ota::PROMPT_ID)))
+        ->toBe(['accepted' => true]);
 });
 
 it('leaves the release for next launch when later is tapped', function () {
@@ -107,7 +112,9 @@ it('ignores a tap on one of the app\'s own alerts', function () {
 
     event(new UpdatePromptAnswered(1, 'Update', 'some-other-alert'));
 
-    expect($this->bridge->callsTo('Ota.Download'))->toBeEmpty();
+    expect($this->bridge->callsTo('Ota.Download'))->toBeEmpty()
+        ->and(app(Ota::class)->answerPrompt(new UpdatePromptAnswered(1, 'Update', 'some-other-alert')))
+        ->toBe(['accepted' => false]);
 });
 
 it('declares the native prompt it relies on', function () {
