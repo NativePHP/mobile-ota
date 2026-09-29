@@ -245,9 +245,12 @@ class Ota
      * Ask before updating. The check and the dialog both happen natively and
      * in the background, so this returns straight away: the app is still
      * launching when PHP boots, and a dialog raised then is dropped, so the
-     * native side waits until the app is on screen before asking. The answer
-     * comes back as UpdatePromptAnswered, which the plugin handles by
-     * downloading the release to apply on the next launch.
+     * native side waits until the app is on screen before asking. It asks at
+     * most once per launch, however many times PHP boots.
+     *
+     * Update is downloaded natively, behind a progress screen, and queued for
+     * the next launch. PHP hears about it as UpdatePromptAnswered, then
+     * UpdateDownloaded or UpdateFailed.
      */
     public function prompt(): array
     {
@@ -268,20 +271,25 @@ class Ota
             'buttons' => self::PROMPT_BUTTONS,
             'id' => self::PROMPT_ID,
             'event' => UpdatePromptAnswered::class,
+            'progress' => 'Downloading update…',
+            'failed_title' => "Couldn't download the update",
+            'downloaded_event' => UpdateDownloaded::class,
+            'failed_event' => UpdateFailed::class,
         ]) ?? ['scheduled' => false];
     }
 
     /**
-     * The prompt's answer. Only "Update" on this plugin's own prompt does
-     * anything; "Later" leaves the release for the next launch to offer again.
+     * Whether an answer took the update on this plugin's own prompt. The
+     * native side has already started the download by the time PHP hears it,
+     * so this only says what was chosen; "Later" leaves the release for the
+     * next launch to offer again.
      */
     public function answerPrompt(UpdatePromptAnswered $answer): array
     {
-        if ($answer->id !== self::PROMPT_ID || $answer->index !== array_search('Update', self::PROMPT_BUTTONS, true)) {
-            return ['accepted' => false];
-        }
-
-        return ['accepted' => true, ...$this->downloadAndApply()];
+        return [
+            'accepted' => $answer->id === self::PROMPT_ID
+                && $answer->index === array_search('Update', self::PROMPT_BUTTONS, true),
+        ];
     }
 
     public function onLaunch(): void

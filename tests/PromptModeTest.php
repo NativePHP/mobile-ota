@@ -7,6 +7,8 @@
 
 use Native\Mobile\Testing\FakeBridge;
 use Native\Mobile\Testing\Native;
+use Nativephp\MobileOta\Events\UpdateDownloaded;
+use Nativephp\MobileOta\Events\UpdateFailed;
 use Nativephp\MobileOta\Events\UpdatePromptAnswered;
 use Nativephp\MobileOta\Ota;
 use Tests\TestCase;
@@ -61,6 +63,8 @@ it('hands the check and the question to the native side, with who is asking', fu
             'buttons' => ['Later', 'Update'],
             'id' => Ota::PROMPT_ID,
             'event' => UpdatePromptAnswered::class,
+            'downloaded_event' => UpdateDownloaded::class,
+            'failed_event' => UpdateFailed::class,
         ]);
 });
 
@@ -80,17 +84,18 @@ it('never asks in manual mode', function () {
         ->and($this->bridge->callsTo('Ota.Check'))->toBeEmpty();
 });
 
-it('downloads the release when update is tapped', function () {
+it('leaves the download to the native side when update is tapped', function () {
     ($this->releaseWaiting)();
-    $this->bridge->respondTo('Ota.Download', ['success' => true, 'queued' => true]);
-    $this->bridge->respondTo('Ota.Apply', ['success' => true, 'queued' => true, 'applyOnNextBoot' => true]);
 
+    // The native prompt downloads behind its own progress screen. A second
+    // download from PHP would run it twice, and on an EDGE screen would hold
+    // the PHP thread for as long as the download takes.
     event(new UpdatePromptAnswered(1, 'Update', Ota::PROMPT_ID));
 
-    expect($this->bridge->callsTo('Ota.Download')[0]['params'])->toMatchArray([
-        'url' => 'https://example.com/laravel_bundle.zip',
-        'release' => 'new-release',
-    ])->and($this->bridge->callsTo('Ota.Apply'))->toHaveCount(1);
+    expect($this->bridge->callsTo('Ota.Check'))->toBeEmpty()
+        ->and($this->bridge->callsTo('Ota.Download'))->toBeEmpty()
+        ->and(app(Ota::class)->answerPrompt(new UpdatePromptAnswered(1, 'Update', Ota::PROMPT_ID)))
+        ->toBe(['accepted' => true]);
 });
 
 it('leaves the release for next launch when later is tapped', function () {
@@ -107,7 +112,9 @@ it('ignores a tap on one of the app\'s own alerts', function () {
 
     event(new UpdatePromptAnswered(1, 'Update', 'some-other-alert'));
 
-    expect($this->bridge->callsTo('Ota.Download'))->toBeEmpty();
+    expect($this->bridge->callsTo('Ota.Download'))->toBeEmpty()
+        ->and(app(Ota::class)->answerPrompt(new UpdatePromptAnswered(1, 'Update', 'some-other-alert')))
+        ->toBe(['accepted' => false]);
 });
 
 it('declares the native prompt it relies on', function () {
@@ -130,4 +137,44 @@ it('reads the native check result whether or not core wraps it in data', functio
 
     expect($swift)->toContain('let data = (check["data"] as? [String: Any]) ?? check')
         ->and($kotlin)->toContain('val data = check["data"] as? Map<*, *> ?: check');
+});
+
+it('asks once per process natively, and not for a release already queued', function () {
+    // PHP boots more than once per launch, so Ota::$prompted alone cannot
+    // stop a second dialog. The native side keeps the flag, and skips a
+    // release whose pending.zip and pending.json are already waiting.
+    foreach (['ios/OtaFunctions.swift', 'android/OtaFunctions.kt'] as $file) {
+        $source = file_get_contents(dirname(__DIR__).'/resources/'.$file);
+        $prompt = substr($source, strpos($source, 'class Prompt'));
+
+        expect($prompt)->toContain('claimPrompt()')
+            ->and($prompt)->toContain('pendingHolds(')
+            // The key the native Download writes into pending.json is the
+            // one the guard reads back.
+            ->and(substr_count($source, '"release_uuid"'))->toBeGreaterThanOrEqual(2);
+    }
+});
+
+it('downloads on update natively on iOS, behind a screen that cannot be dismissed', function () {
+    $swift = file_get_contents(dirname(__DIR__).'/resources/ios/OtaFunctions.swift');
+    $prompt = substr($swift, strpos($swift, 'class Prompt'));
+
+    expect($prompt)->toContain('OtaFunctions.downloadWithProgress(parameters: parameters)')
+        // One download path: the prompt goes through Ota.Download's own code.
+        ->and($swift)->toContain('return try Download().execute(parameters: parameters)')
+        ->and($swift)->toContain('modalPresentationStyle = .overFullScreen')
+        ->and($swift)->toContain('isModalInPresentation = true')
+        // The download starts once the screen is up, never before.
+        ->and($swift)->toContain('presented: { screen in');
+});
+
+it('downloads on update natively on Android, behind a dialog that cannot be cancelled', function () {
+    $kotlin = file_get_contents(dirname(__DIR__).'/resources/android/OtaFunctions.kt');
+    $prompt = substr($kotlin, strpos($kotlin, 'class Prompt'));
+
+    expect($prompt)->toContain('downloadWithProgress(activity, parameters)')
+        // One download path: the prompt goes through Ota.Download's own code.
+        ->and($kotlin)->toContain('Download(context).execute(downloadParameters)')
+        ->and($kotlin)->toContain('.setCancelable(false)')
+        ->and($kotlin)->toContain('setCanceledOnTouchOutside(false)');
 });
