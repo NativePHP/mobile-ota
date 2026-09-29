@@ -331,12 +331,14 @@ enum OtaFunctions {
 
     /// Update was tapped: cover the app with a progress screen, download the
     /// release, then take the screen away and say how it went, to the user
-    /// only when it failed and to PHP either way. The download starts once
+    /// (ready, or why it failed) and to PHP. The download starts once
     /// the screen is up, so it can never finish before there is anything to
     /// dismiss.
     fileprivate static func downloadWithProgress(parameters: [String: Any]) {
         let progress = parameters["progress"] as? String ?? "Downloading update…"
         let failedTitle = parameters["failed_title"] as? String ?? "Couldn't download the update"
+        let readyTitle = parameters["ready_title"] as? String ?? "Update ready"
+        let readyMessage = parameters["ready_message"] as? String ?? "Close and reopen the app to finish updating."
         let downloadedEvent = parameters["downloaded_event"] as? String ?? ""
         let failedEvent = parameters["failed_event"] as? String ?? ""
 
@@ -358,9 +360,14 @@ enum OtaFunctions {
             run { result in
                 DispatchQueue.main.async {
                     screen.dismiss(animated: true) {
-                        guard result["success"] as? Bool != true else { return }
+                        // Either way the user is told how it went. Nothing
+                        // restarts the app: the update is applied the next
+                        // time they open it.
+                        let succeeded = result["success"] as? Bool == true
                         presentWhenOnScreen(attemptsLeft: 20) {
-                            let alert = UIAlertController(title: failedTitle, message: failureReason(result), preferredStyle: .alert)
+                            let alert = succeeded
+                                ? UIAlertController(title: readyTitle, message: readyMessage, preferredStyle: .alert)
+                                : UIAlertController(title: failedTitle, message: failureReason(result), preferredStyle: .alert)
                             alert.addAction(UIAlertAction(title: "OK", style: .default))
                             return alert
                         }

@@ -63,6 +63,8 @@ it('hands the check and the question to the native side, with who is asking', fu
             'buttons' => ['Later', 'Update'],
             'id' => Ota::PROMPT_ID,
             'event' => UpdatePromptAnswered::class,
+            'ready_title' => 'Update ready',
+            'ready_message' => 'Close and reopen the app to finish updating.',
             'downloaded_event' => UpdateDownloaded::class,
             'failed_event' => UpdateFailed::class,
         ]);
@@ -177,4 +179,21 @@ it('downloads on update natively on Android, behind a dialog that cannot be canc
         ->and($kotlin)->toContain('Download(context).execute(downloadParameters)')
         ->and($kotlin)->toContain('.setCancelable(false)')
         ->and($kotlin)->toContain('setCanceledOnTouchOutside(false)');
+});
+
+it('tells the user to reopen the app once the download is ready, and never restarts it', function () {
+    foreach (['ios/OtaFunctions.swift', 'android/OtaFunctions.kt'] as $file) {
+        $source = file_get_contents(dirname(__DIR__).'/resources/'.$file);
+        $download = substr($source, strpos($source, 'downloadWithProgress('.(str_ends_with($file, '.swift') ? 'parameters: [String' : 'activity: FragmentActivity')));
+
+        expect($download)->toContain('"Update ready"')
+            ->and($download)->toContain('"Close and reopen the app to finish updating."')
+            ->and($download)->toContain('readyTitle')
+            ->and($download)->toContain('readyMessage');
+
+        // Nothing in the plugin relaunches, reloads or kills the app.
+        foreach (['exit(', 'killProcess', 'recreate()', 'finishAffinity', 'reloadWebView', 'relaunch'] as $restart) {
+            expect($source)->not->toContain($restart);
+        }
+    }
 });

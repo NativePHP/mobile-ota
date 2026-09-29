@@ -319,11 +319,13 @@ object OtaFunctions {
     /**
      * Update was tapped (main thread): show a progress dialog that cannot be
      * cancelled, download the release, then dismiss it and say how it went,
-     * to the user only when it failed and to PHP either way.
+     * to the user (ready, or why it failed) and to PHP.
      */
     private fun downloadWithProgress(activity: FragmentActivity, parameters: Map<String, Any>) {
         val progress = parameters["progress"] as? String ?: "Downloading update…"
         val failedTitle = parameters["failed_title"] as? String ?: "Couldn't download the update"
+        val readyTitle = parameters["ready_title"] as? String ?: "Update ready"
+        val readyMessage = parameters["ready_message"] as? String ?: "Close and reopen the app to finish updating."
         val downloadedEvent = parameters["downloaded_event"] as? String
         val failedEvent = parameters["failed_event"] as? String
 
@@ -349,6 +351,17 @@ object OtaFunctions {
                             downloadedEvent,
                             JSONObject().put("version", result["version"] as? String ?: "").toString()
                         )
+                    }
+                    // Nothing restarts the app: the update is applied the
+                    // next time the user opens it, so tell them that.
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        runCatching {
+                            AlertDialog.Builder(activity)
+                                .setTitle(readyTitle)
+                                .setMessage(readyMessage)
+                                .setPositiveButton("OK", null)
+                                .show()
+                        }
                     }
                     return@post
                 }
