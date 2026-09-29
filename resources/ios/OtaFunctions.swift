@@ -227,9 +227,13 @@ enum OtaFunctions {
             let event = parameters["event"] as? String ?? ""
 
             DispatchQueue.global(qos: .utility).async {
-                guard let check = try? OtaFunctions.checkForUpdate(parameters: parameters),
-                      let data = check["data"] as? [String: Any],
-                      data["available"] as? Bool == true else {
+                // Core returns bridge data unwrapped; older cores wrapped it
+                // in "data". Read either so the prompt shows on both.
+                guard let check = try? OtaFunctions.checkForUpdate(parameters: parameters) else {
+                    return
+                }
+                let data = (check["data"] as? [String: Any]) ?? check
+                guard data["available"] as? Bool == true else {
                     return
                 }
 

@@ -121,3 +121,13 @@ it('declares the native prompt it relies on', function () {
         ->and(file_get_contents(dirname(__DIR__).'/resources/ios/OtaFunctions.swift'))->toContain('class Prompt: BridgeFunction')
         ->and(file_get_contents(dirname(__DIR__).'/resources/android/OtaFunctions.kt'))->toContain('class Prompt(private val activity: FragmentActivity)');
 });
+
+it('reads the native check result whether or not core wraps it in data', function () {
+    // Core 4.x returns bridge data as-is; older cores wrapped it in "data".
+    // Requiring the wrapper meant the prompt never showed on 4.x.
+    $swift = file_get_contents(dirname(__DIR__).'/resources/ios/OtaFunctions.swift');
+    $kotlin = file_get_contents(dirname(__DIR__).'/resources/android/OtaFunctions.kt');
+
+    expect($swift)->toContain('let data = (check["data"] as? [String: Any]) ?? check')
+        ->and($kotlin)->toContain('val data = check["data"] as? Map<*, *> ?: check');
+});
