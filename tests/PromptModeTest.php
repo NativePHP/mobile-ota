@@ -147,3 +147,16 @@ it('asks once per process natively, and not for a release already queued', funct
             ->and(substr_count($source, '"release_uuid"'))->toBeGreaterThanOrEqual(2);
     }
 });
+
+it('downloads on update natively on iOS, behind a screen that cannot be dismissed', function () {
+    $swift = file_get_contents(dirname(__DIR__).'/resources/ios/OtaFunctions.swift');
+    $prompt = substr($swift, strpos($swift, 'class Prompt'));
+
+    expect($prompt)->toContain('OtaFunctions.downloadWithProgress(parameters: parameters)')
+        // One download path: the prompt goes through Ota.Download's own code.
+        ->and($swift)->toContain('return try Download().execute(parameters: parameters)')
+        ->and($swift)->toContain('modalPresentationStyle = .overFullScreen')
+        ->and($swift)->toContain('isModalInPresentation = true')
+        // The download starts once the screen is up, never before.
+        ->and($swift)->toContain('presented: { screen in');
+});

@@ -217,7 +217,8 @@ enum OtaFunctions {
     /// Update once the app is actually on screen. PHP boots before that, and
     /// an alert presented while the scene is still launching is dropped, so
     /// the dialog waits for an active scene rather than presenting blind. The
-    /// answer goes back to PHP as the event PHP named.
+    /// answer goes back to PHP as the event PHP named; Update is then
+    /// downloaded here, behind a progress screen the user cannot dismiss.
     class Prompt: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
             let title = parameters["title"] as? String ?? "Update available"
@@ -249,14 +250,27 @@ enum OtaFunctions {
                     return
                 }
 
+                // Never offer what the download would refuse.
+                if OtaFunctions.predatesShell(publishedAt: data["published_at"] as? String,
+                                              builtAt: parameters["shell_built_at"] as? String) {
+                    return
+                }
+
                 OtaFunctions.presentWhenOnScreen(attemptsLeft: 120) {
                     let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
                     for (index, label) in buttons.enumerated() {
                         alert.addAction(UIAlertAction(title: label, style: index == 0 ? .cancel : .default) { _ in
-                            guard !event.isEmpty else { return }
-                            var payload: [String: Any] = ["index": index, "label": label]
-                            if let id { payload["id"] = id }
-                            LaravelBridge.shared.send?(event, payload)
+                            if !event.isEmpty {
+                                var payload: [String: Any] = ["index": index, "label": label]
+                                if let id { payload["id"] = id }
+                                LaravelBridge.shared.send?(event, payload)
+                            }
+                            // The second button takes the update, and it is
+                            // fetched right here with a blocking progress
+                            // screen. PHP only hears how it went.
+                            if index == 1 {
+                                OtaFunctions.downloadWithProgress(parameters: parameters)
+                            }
                         })
                     }
                     return alert
@@ -293,17 +307,131 @@ enum OtaFunctions {
 
     /// Presents once there is an active scene with a key window and nothing
     /// else being presented or dismissed, trying again every half second.
-    fileprivate static func presentWhenOnScreen(attemptsLeft: Int, _ build: @escaping () -> UIViewController) {
+    fileprivate static func presentWhenOnScreen(
+        attemptsLeft: Int,
+        _ build: @escaping () -> UIViewController,
+        presented: ((UIViewController) -> Void)? = nil,
+        gaveUp: (() -> Void)? = nil
+    ) {
         DispatchQueue.main.async {
             if let top = topViewController() {
-                top.present(build(), animated: true)
+                let controller = build()
+                top.present(controller, animated: true) { presented?(controller) }
                 return
             }
-            guard attemptsLeft > 0 else { return }
+            guard attemptsLeft > 0 else {
+                gaveUp?()
+                return
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                presentWhenOnScreen(attemptsLeft: attemptsLeft - 1, build)
+                presentWhenOnScreen(attemptsLeft: attemptsLeft - 1, build, presented: presented, gaveUp: gaveUp)
             }
         }
+    }
+
+    /// Update was tapped: cover the app with a progress screen, download the
+    /// release, then take the screen away and say how it went, to the user
+    /// only when it failed and to PHP either way. The download starts once
+    /// the screen is up, so it can never finish before there is anything to
+    /// dismiss.
+    fileprivate static func downloadWithProgress(parameters: [String: Any]) {
+        let progress = parameters["progress"] as? String ?? "Downloading update…"
+        let failedTitle = parameters["failed_title"] as? String ?? "Couldn't download the update"
+        let downloadedEvent = parameters["downloaded_event"] as? String ?? ""
+        let failedEvent = parameters["failed_event"] as? String ?? ""
+
+        func run(_ finish: @escaping ([String: Any]) -> Void) {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = fetchOffered(parameters: parameters)
+                if result["success"] as? Bool == true {
+                    if !downloadedEvent.isEmpty {
+                        LaravelBridge.shared.send?(downloadedEvent, ["version": result["version"] as? String ?? ""])
+                    }
+                } else if !failedEvent.isEmpty {
+                    LaravelBridge.shared.send?(failedEvent, ["stage": "download", "message": failureReason(result)])
+                }
+                finish(result)
+            }
+        }
+
+        presentWhenOnScreen(attemptsLeft: 20, { DownloadProgressController(message: progress) }, presented: { screen in
+            run { result in
+                DispatchQueue.main.async {
+                    screen.dismiss(animated: true) {
+                        guard result["success"] as? Bool != true else { return }
+                        presentWhenOnScreen(attemptsLeft: 20) {
+                            let alert = UIAlertController(title: failedTitle, message: failureReason(result), preferredStyle: .alert)
+                            alert.addAction(UIAlertAction(title: "OK", style: .default))
+                            return alert
+                        }
+                    }
+                }
+            }
+        }, gaveUp: {
+            // Nothing on screen to show progress over; the download is
+            // what was asked for, so it still happens.
+            run { _ in }
+        })
+    }
+
+    /// The same download Ota.Download does, for the prompt's Update button.
+    fileprivate static func download(parameters: [String: Any]) -> [String: Any] {
+        do {
+            return try Download().execute(parameters: parameters)
+        } catch {
+            return ["success": false, "error": error.localizedDescription]
+        }
+    }
+
+    /// Asks the lane again, because the download URL is signed and may have
+    /// expired while the dialog waited for an answer, then queues what it
+    /// offers the same way Ota.Download does.
+    fileprivate static func fetchOffered(parameters: [String: Any]) -> [String: Any] {
+        let check = (try? checkForUpdate(parameters: parameters)) ?? [:]
+        let offered = (check["data"] as? [String: Any]) ?? check
+        let url = offered["download_url"] as? String ?? ""
+        let release = offered["release"] as? String ?? ""
+
+        guard offered["available"] as? Bool == true, !url.isEmpty, !release.isEmpty else {
+            return ["success": false, "error": offered["reason"] as? String ?? "The update is no longer available."]
+        }
+        if predatesShell(publishedAt: offered["published_at"] as? String, builtAt: parameters["shell_built_at"] as? String) {
+            return ["success": false, "error": "That release is older than the installed app."]
+        }
+
+        var result = download(parameters: [
+            "url": url,
+            "version": release,
+            "release": release,
+            "sha256": offered["sha256"] ?? "",
+            "size": offered["size"] ?? 0,
+            "commit": offered["commit"] ?? "",
+            "published_at": offered["published_at"] ?? ""
+        ])
+        result["version"] = release
+        return result
+    }
+
+    fileprivate static func failureReason(_ result: [String: Any]) -> String {
+        return result["error"] as? String ?? result["message"] as? String ?? "Download failed."
+    }
+
+    /// A release published before this shell was built is already inside it.
+    /// The server applies the same rule; PHP's downloadAndApply does too.
+    fileprivate static func predatesShell(publishedAt: String?, builtAt: String?) -> Bool {
+        guard let published = parseDate(publishedAt), let built = parseDate(builtAt) else {
+            return false
+        }
+        return published <= built
+    }
+
+    fileprivate static func parseDate(_ value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
     }
 
     fileprivate static func topViewController() -> UIViewController? {
@@ -492,6 +620,63 @@ enum OtaFunctions {
             "url": downloadUrl,
             "version": releaseUuid,
             "current_version": releaseUuid
+        ])
+    }
+}
+
+/// Covers the app while an update downloads: a dimmed screen with a spinner
+/// and a line of text, presented over everything and with nothing to tap,
+/// so the user waits for it rather than carrying on in an app about to change.
+fileprivate final class DownloadProgressController: UIViewController {
+    private let message: String
+
+    init(message: String) {
+        self.message = message
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .overFullScreen
+        modalTransitionStyle = .crossDissolve
+        isModalInPresentation = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor.black.withAlphaComponent(0.4)
+        view.accessibilityViewIsModal = true
+
+        let card = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+        card.layer.cornerRadius = 14
+        card.clipsToBounds = true
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        let spinner = UIActivityIndicatorView(style: .large)
+        spinner.startAnimating()
+
+        let label = UILabel()
+        label.text = message
+        label.font = .preferredFont(forTextStyle: .headline)
+        label.textAlignment = .center
+        label.numberOfLines = 0
+
+        let stack = UIStackView(arrangedSubviews: [spinner, label])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        card.contentView.addSubview(stack)
+        view.addSubview(card)
+
+        NSLayoutConstraint.activate([
+            card.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            card.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            card.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            card.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -64),
+            stack.topAnchor.constraint(equalTo: card.contentView.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(equalTo: card.contentView.bottomAnchor, constant: -24),
+            stack.leadingAnchor.constraint(equalTo: card.contentView.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: card.contentView.trailingAnchor, constant: -24)
         ])
     }
 }
