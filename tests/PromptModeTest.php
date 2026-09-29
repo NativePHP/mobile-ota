@@ -160,3 +160,14 @@ it('downloads on update natively on iOS, behind a screen that cannot be dismisse
         // The download starts once the screen is up, never before.
         ->and($swift)->toContain('presented: { screen in');
 });
+
+it('downloads on update natively on Android, behind a dialog that cannot be cancelled', function () {
+    $kotlin = file_get_contents(dirname(__DIR__).'/resources/android/OtaFunctions.kt');
+    $prompt = substr($kotlin, strpos($kotlin, 'class Prompt'));
+
+    expect($prompt)->toContain('downloadWithProgress(activity, parameters)')
+        // One download path: the prompt goes through Ota.Download's own code.
+        ->and($kotlin)->toContain('Download(context).execute(downloadParameters)')
+        ->and($kotlin)->toContain('.setCancelable(false)')
+        ->and($kotlin)->toContain('setCanceledOnTouchOutside(false)');
+});
