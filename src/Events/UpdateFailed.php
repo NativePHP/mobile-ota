@@ -4,8 +4,9 @@ namespace Nativephp\MobileOta\Events;
 
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
+use Nativephp\MobileOta\Events\Concerns\BroadcastsGlobally;
 
-class UpdateFailed
+class UpdateFailed implements BroadcastsGlobally
 {
     use Dispatchable, SerializesModels;
 
