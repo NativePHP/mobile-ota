@@ -9,6 +9,7 @@
 use Illuminate\Support\Facades\Event;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 use Nativephp\MobileOta\Events\UpdateDownloaded;
 use Nativephp\MobileOta\Events\UpdateFailed;
 use Nativephp\MobileOta\Events\UpdatePromptAnswered;
@@ -47,6 +48,13 @@ it('reaches app listeners from an EDGE screen', function (string $class, array $
 
         return true;
     });
+})->with($sent);
+
+it('is let through /_native/api/events', function (string $class) {
+    // Since 4.6.1 / 3.3.11 the endpoint refuses any class without the marker,
+    // and the event silently never fires.
+    expect(class_exists($class))->toBeTrue()
+        ->and(is_subclass_of($class, DispatchableFromNative::class))->toBeTrue();
 })->with($sent);
 
 it('can still be built the way a webview screen builds it', function (string $class, array $payload) {
