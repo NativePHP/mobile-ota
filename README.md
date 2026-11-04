@@ -7,6 +7,10 @@ This plugin is the part that runs in your app. It checks for an update, download
 apply the next time the app starts. Updates are built and published by [Bifrost](https://bifrost.nativephp.com). See
 [OTA Updates](https://bifrost.nativephp.com/docs/mobile/builds/ota) in the Bifrost docs for sending them.
 
+OTA is driven entirely from your app's PHP, through the `Ota` facade. There is no JavaScript or web API for it: a page
+running in the app's web view can't check for, download, or apply an update. An OTA update replaces the code your app
+runs, so the decision to fetch and install one deliberately stays in PHP, where you control it.
+
 The plugin is free.
 
 ## What an update can change

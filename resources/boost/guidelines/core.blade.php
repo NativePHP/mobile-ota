@@ -1,61 +1,59 @@
 ## nativephp/mobile-ota
 
-A NativePHP Mobile plugin
+Over-the-air PHP payload updates for a NativePHP Mobile app.
+
+### OTA is driven from PHP only
+
+There is no JavaScript or web API for OTA. A page running in the app's web view can't check
+for, download, or apply an update. An update replaces the code the app runs, so the decision
+to fetch and install one stays in your app's PHP. Drive it with the `Ota` facade.
 
 ### Installation
 
 ```bash
 composer require nativephp/mobile-ota
+php artisan native:plugin:register nativephp/mobile-ota
 ```
 
-### PHP Usage (Livewire/Blade)
+### PHP Usage
 
 Use the `Ota` facade:
 
 @verbatim
-<code-snippet name="Using Ota Facade" lang="php">
+<code-snippet name="Checking for and applying an update" lang="php">
 use Nativephp\MobileOta\Facades\Ota;
 
-// Execute the plugin functionality
-$result = Ota::execute(['option1' => 'value']);
+$update = Ota::check();
 
-// Get the current status
-$status = Ota::getStatus();
+if ($update['available']) {
+    // Downloads, verifies the checksum, and queues the update.
+    // It is applied the next time the app starts.
+    Ota::downloadAndApply();
+}
 </code-snippet>
 @endverbatim
 
 ### Available Methods
 
-- `Ota::execute()`: Execute the plugin functionality
-- `Ota::getStatus()`: Get the current status
+- `Ota::check()`: Ask whether a newer release is waiting for this app
+- `Ota::downloadAndApply()`: Download, verify and queue an update for the next launch
+- `Ota::rollback()`: Put the previously downloaded update back for the next launch
+- `Ota::status()`: Whether an update is downloaded and pending
+- `Ota::currentRelease()`: The release this app is running, or `null` if it shipped as-is
 
 ### Events
 
-- `OtaCompleted`: Listen with `#[OnNative(OtaCompleted::class)]`
+Each step dispatches a Laravel event you can listen for:
 
 @verbatim
-<code-snippet name="Listening for Ota Events" lang="php">
-use Native\Mobile\Attributes\OnNative;
-use Nativephp\MobileOta\Events\OtaCompleted;
+<code-snippet name="Listening for OTA Events" lang="php">
+use Illuminate\Support\Facades\Event;
+use Nativephp\MobileOta\Events\UpdateApplied;
 
-#[OnNative(OtaCompleted::class)]
-public function handleOtaCompleted($result, $id = null)
-{
-    // Handle the event
-}
+Event::listen(UpdateApplied::class, function (UpdateApplied $event) {
+    // $event->version
+});
 </code-snippet>
 @endverbatim
 
-### JavaScript Usage (Vue/React/Inertia)
-
-@verbatim
-<code-snippet name="Using Ota in JavaScript" lang="javascript">
-import { ota } from '@nativephp/mobile-ota';
-
-// Execute the plugin functionality
-const result = await ota.execute({ option1: 'value' });
-
-// Get the current status
-const status = await ota.getStatus();
-</code-snippet>
-@endverbatim
+Available events: `UpdateAvailable`, `UpdateDownloaded`, `UpdateApplied`, `RolledBack`, `UpdateFailed`.
