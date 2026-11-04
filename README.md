@@ -20,7 +20,7 @@ build.
 
 ## Requirements
 
-- `nativephp/mobile` 4.5.2 or later
+- `nativephp/mobile` 4.6.1 or later
 - iOS and Android
 
 ## Installation

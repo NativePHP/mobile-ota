@@ -4,6 +4,7 @@ namespace Nativephp\MobileOta\Events;
 
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
+use Native\Mobile\Events\Contracts\DispatchableFromNative;
 use Nativephp\MobileOta\Events\Concerns\BroadcastsGlobally;
 
 /**
@@ -11,7 +12,7 @@ use Nativephp\MobileOta\Events\Concerns\BroadcastsGlobally;
  * from the button's position and label and the alert's id, so the plugin can
  * answer its own dialog without catching every ButtonPressed in the app.
  */
-class UpdatePromptAnswered implements BroadcastsGlobally
+class UpdatePromptAnswered implements BroadcastsGlobally, DispatchableFromNative
 {
     use Dispatchable, SerializesModels;
 
