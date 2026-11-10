@@ -24,25 +24,25 @@ beforeEach(function () {
     }
 
     $this->bridge = Native::fakeBridge();
-    $this->bridge->respondTo('Ota.Download', ['success' => true, 'version' => '3.0.13.0.3']);
+    $this->bridge->respondTo('Ota.Download', ['success' => true, 'version' => '1.2.3']);
     $this->bridge->respondTo('Ota.Apply', [
         'success' => true,
         'queued' => true,
         'applyOnNextBoot' => true,
         'restartRequired' => true,
-        'version' => '3.0.13.0.3',
+        'version' => '1.2.3',
     ]);
     $this->bridge->respondTo('Ota.Rollback', ['success' => true, 'version' => '1.0.0']);
 });
 
 describe('withOtaUpdate()', function () {
     it('scripts the payload check() reports', function () {
-        $this->bridge->withOtaUpdate('3.0.13.0.3', 'https://cdn.example/laravel_bundle.zip');
+        $this->bridge->withOtaUpdate('1.2.3', 'https://cdn.example/laravel_bundle.zip');
 
         $check = (new Ota)->check();
 
         expect($check['available'])->toBeTrue()
-            ->and($check['current_version'])->toBe('3.0.13.0.3')
+            ->and($check['current_version'])->toBe('1.2.3')
             ->and($check['url'])->toBe('https://cdn.example/laravel_bundle.zip')
             ->and($check['download_url'])->toBe('https://cdn.example/laravel_bundle.zip');
     });
@@ -102,7 +102,7 @@ describe('assertOtaChecked()', function () {
 
 describe('assertOtaDownloaded()', function () {
     it('passes when any download ran', function () {
-        $this->bridge->withOtaUpdate('3.0.13.0.3', 'https://cdn.example/laravel_bundle.zip');
+        $this->bridge->withOtaUpdate('1.2.3', 'https://cdn.example/laravel_bundle.zip');
 
         (new Ota)->downloadAndApply();
 
@@ -111,7 +111,7 @@ describe('assertOtaDownloaded()', function () {
 
     it('matches the exact download URL', function () {
         $url = 'https://cdn.example/laravel_bundle.zip';
-        $this->bridge->withOtaUpdate('3.0.13.0.3', $url);
+        $this->bridge->withOtaUpdate('1.2.3', $url);
 
         (new Ota)->downloadAndApply();
 
@@ -124,7 +124,7 @@ describe('assertOtaDownloaded()', function () {
     });
 
     it('fails when a different URL was downloaded, naming what was', function () {
-        $this->bridge->withOtaUpdate('3.0.13.0.3', 'https://cdn.example/actual.zip');
+        $this->bridge->withOtaUpdate('1.2.3', 'https://cdn.example/actual.zip');
 
         (new Ota)->downloadAndApply();
 
@@ -194,7 +194,7 @@ describe('downloadAndApply()', function () {
         $this->bridge->respondTo('Ota.Check', [
             'available' => true,
             'upToDate' => false,
-            'current_version' => '3.0.13.0.3',
+            'current_version' => '1.2.3',
             'download_url' => 'https://cdn.example/from-download-url.zip',
         ]);
 

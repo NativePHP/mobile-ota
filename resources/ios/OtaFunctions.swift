@@ -219,26 +219,71 @@ enum OtaFunctions {
         }
     }
 
+    /// Checks in the background and, when a release is waiting, asks Later /
+    /// Update once the app is actually on screen. PHP boots before that, and
+    /// an alert presented while the scene is still launching is dropped, so
+    /// the dialog waits for an active scene rather than presenting blind. The
+    /// answer goes back to PHP as the event PHP named; Update is then
+    /// downloaded here, behind a progress screen the user cannot dismiss.
     class Prompt: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            let check = try checkForUpdate(parameters: parameters)
-            let data = check["data"] as? [String: Any]
-            let available = data?["available"] as? Bool ?? false
-            if !available {
-                return BridgeResponse.success(data: ["available": false, "accepted": false])
+            let title = parameters["title"] as? String ?? "Update available"
+            let message = parameters["message"] as? String ?? ""
+            let buttons = (parameters["buttons"] as? [Any])?.compactMap { $0 as? String } ?? ["Later", "Update"]
+            let id = parameters["id"] as? String
+            let event = parameters["event"] as? String ?? ""
+
+            // Once per process. PHP boots more than once per launch (a
+            // runtime reboot, the queue worker, classic mode per request) and
+            // asks every time, so the answer to "have we asked" lives here.
+            guard OtaFunctions.claimPrompt() else {
+                return BridgeResponse.success(data: ["scheduled": false, "reason": "already asked"])
             }
-            let currentVersion = data?["current_version"] as? String
-                ?? data?["version"] as? String
-                ?? ""
-            return BridgeResponse.success(data: [
-                "available": true,
-                "accepted": false,
-                "version": currentVersion,
-                "current_version": currentVersion,
-                "download_url": data?["download_url"] ?? "",
-                "url": data?["url"] ?? data?["download_url"] ?? "",
-                "needsUi": true
-            ])
+
+            DispatchQueue.global(qos: .utility).async {
+                // Core returns bridge data unwrapped; older cores wrapped it
+                // in "data". Read either so the prompt shows on both.
+                guard let check = try? OtaFunctions.checkForUpdate(parameters: parameters) else {
+                    return
+                }
+                let data = (check["data"] as? [String: Any]) ?? check
+                guard data["available"] as? Bool == true else {
+                    return
+                }
+
+                // Already downloaded and waiting for the next launch.
+                if OtaFunctions.pendingHolds(release: data["release"] as? String ?? "") {
+                    return
+                }
+
+                // Never offer what the download would refuse.
+                if OtaFunctions.predatesShell(publishedAt: data["published_at"] as? String,
+                                              builtAt: parameters["shell_built_at"] as? String) {
+                    return
+                }
+
+                OtaFunctions.presentWhenOnScreen(attemptsLeft: 120) {
+                    let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+                    for (index, label) in buttons.enumerated() {
+                        alert.addAction(UIAlertAction(title: label, style: index == 0 ? .cancel : .default) { _ in
+                            if !event.isEmpty {
+                                var payload: [String: Any] = ["index": index, "label": label]
+                                if let id { payload["id"] = id }
+                                LaravelBridge.shared.send?(event, payload)
+                            }
+                            // The second button takes the update, and it is
+                            // fetched right here with a blocking progress
+                            // screen. PHP only hears how it went.
+                            if index == 1 {
+                                OtaFunctions.downloadWithProgress(parameters: parameters)
+                            }
+                        })
+                    }
+                    return alert
+                }
+            }
+
+            return BridgeResponse.success(data: ["scheduled": true])
         }
     }
 
@@ -289,6 +334,189 @@ enum OtaFunctions {
         let sha256 = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
         let message = signedMessage(project: identity[0], arc: identity[1], fingerprint: identity[2], algorithm: identity[3], release: identity[4], sha256: sha256, size: body.count)
         return isValidSignature(signature, keyId: keyId, message: message) ? nil : "signature invalid"
+    }
+
+    private static let promptLock = NSLock()
+    private static var prompted = false
+
+    /// True the first time it is called in this process, false after.
+    fileprivate static func claimPrompt() -> Bool {
+        promptLock.lock()
+        defer { promptLock.unlock() }
+        if prompted { return false }
+        prompted = true
+        return true
+    }
+
+    /// Whether the queued payload is already this release: pending.zip is
+    /// there and the pending.json written after it names the same release.
+    fileprivate static func pendingHolds(release: String) -> Bool {
+        guard !release.isEmpty,
+              FileManager.default.fileExists(atPath: pendingZip.path),
+              let data = try? Data(contentsOf: pendingManifest),
+              let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return manifest["release_uuid"] as? String == release
+    }
+
+    /// Presents once there is an active scene with a key window and nothing
+    /// else being presented or dismissed, trying again every half second.
+    fileprivate static func presentWhenOnScreen(
+        attemptsLeft: Int,
+        _ build: @escaping () -> UIViewController,
+        presented: ((UIViewController) -> Void)? = nil,
+        gaveUp: (() -> Void)? = nil
+    ) {
+        DispatchQueue.main.async {
+            if let top = topViewController() {
+                let controller = build()
+                top.present(controller, animated: true) { presented?(controller) }
+                return
+            }
+            guard attemptsLeft > 0 else {
+                gaveUp?()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                presentWhenOnScreen(attemptsLeft: attemptsLeft - 1, build, presented: presented, gaveUp: gaveUp)
+            }
+        }
+    }
+
+    /// Update was tapped: cover the app with a progress screen, download the
+    /// release, then take the screen away and say how it went, to the user
+    /// (ready, or why it failed) and to PHP. The download starts once
+    /// the screen is up, so it can never finish before there is anything to
+    /// dismiss.
+    fileprivate static func downloadWithProgress(parameters: [String: Any]) {
+        let progress = parameters["progress"] as? String ?? "Downloading update…"
+        let failedTitle = parameters["failed_title"] as? String ?? "Couldn't download the update"
+        let readyTitle = parameters["ready_title"] as? String ?? "Update ready"
+        let readyMessage = parameters["ready_message"] as? String ?? "Close and reopen the app to finish updating."
+        let downloadedEvent = parameters["downloaded_event"] as? String ?? ""
+        let failedEvent = parameters["failed_event"] as? String ?? ""
+
+        func run(_ finish: @escaping ([String: Any]) -> Void) {
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = fetchOffered(parameters: parameters)
+                if result["success"] as? Bool == true {
+                    if !downloadedEvent.isEmpty {
+                        LaravelBridge.shared.send?(downloadedEvent, ["version": result["version"] as? String ?? ""])
+                    }
+                } else if !failedEvent.isEmpty {
+                    LaravelBridge.shared.send?(failedEvent, ["stage": "download", "message": failureReason(result)])
+                }
+                finish(result)
+            }
+        }
+
+        presentWhenOnScreen(attemptsLeft: 20, { DownloadProgressController(message: progress) }, presented: { screen in
+            run { result in
+                DispatchQueue.main.async {
+                    screen.dismiss(animated: true) {
+                        // Either way the user is told how it went. Nothing
+                        // restarts the app: the update is applied the next
+                        // time they open it.
+                        let succeeded = result["success"] as? Bool == true
+                        presentWhenOnScreen(attemptsLeft: 20) {
+                            let alert = succeeded
+                                ? UIAlertController(title: readyTitle, message: readyMessage, preferredStyle: .alert)
+                                : UIAlertController(title: failedTitle, message: failureReason(result), preferredStyle: .alert)
+                            alert.addAction(UIAlertAction(title: "OK", style: .default))
+                            return alert
+                        }
+                    }
+                }
+            }
+        }, gaveUp: {
+            // Nothing on screen to show progress over; the download is
+            // what was asked for, so it still happens.
+            run { _ in }
+        })
+    }
+
+    /// The same download Ota.Download does, for the prompt's Update button.
+    fileprivate static func download(parameters: [String: Any]) -> [String: Any] {
+        do {
+            return try Download().execute(parameters: parameters)
+        } catch {
+            return ["success": false, "error": error.localizedDescription]
+        }
+    }
+
+    /// Asks the lane again, because the download URL is signed and may have
+    /// expired while the dialog waited for an answer, then queues what it
+    /// offers the same way Ota.Download does.
+    fileprivate static func fetchOffered(parameters: [String: Any]) -> [String: Any] {
+        let check = (try? checkForUpdate(parameters: parameters)) ?? [:]
+        let offered = (check["data"] as? [String: Any]) ?? check
+        let url = offered["download_url"] as? String ?? ""
+        let release = offered["release"] as? String ?? ""
+
+        guard offered["available"] as? Bool == true, !url.isEmpty, !release.isEmpty else {
+            return ["success": false, "error": offered["reason"] as? String ?? "The update is no longer available."]
+        }
+        if predatesShell(publishedAt: offered["published_at"] as? String, builtAt: parameters["shell_built_at"] as? String) {
+            return ["success": false, "error": "That release is older than the installed app."]
+        }
+
+        var result = download(parameters: [
+            "url": url,
+            "version": release,
+            "release": release,
+            "sha256": offered["sha256"] ?? "",
+            "size": offered["size"] ?? 0,
+            "commit": offered["commit"] ?? "",
+            "published_at": offered["published_at"] ?? "",
+            "signature": offered["signature"] ?? "",
+            "key_id": offered["key_id"] ?? "",
+            "project": parameters["project"] ?? "",
+            "arc": parameters["arc"] ?? "",
+            "fingerprint": parameters["fingerprint"] ?? "",
+            "algorithm": parameters["algorithm"] ?? ""
+        ])
+        result["version"] = release
+        return result
+    }
+
+    fileprivate static func failureReason(_ result: [String: Any]) -> String {
+        return result["error"] as? String ?? result["message"] as? String ?? "Download failed."
+    }
+
+    /// A release published before this shell was built is already inside it.
+    /// The server applies the same rule; PHP's downloadAndApply does too.
+    fileprivate static func predatesShell(publishedAt: String?, builtAt: String?) -> Bool {
+        guard let published = parseDate(publishedAt), let built = parseDate(builtAt) else {
+            return false
+        }
+        return published <= built
+    }
+
+    fileprivate static func parseDate(_ value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: value)
+    }
+
+    fileprivate static func topViewController() -> UIViewController? {
+        guard let scene = UIApplication.shared.connectedScenes
+                  .compactMap({ $0 as? UIWindowScene })
+                  .first(where: { $0.activationState == .foregroundActive }),
+              let window = scene.windows.first(where: { $0.isKeyWindow }),
+              var top = window.rootViewController else {
+            return nil
+        }
+        while let presented = top.presentedViewController {
+            top = presented
+        }
+        if top.isBeingDismissed || top.isBeingPresented || top is UIAlertController {
+            return nil
+        }
+        return top
     }
 
     fileprivate static func versionString(from parameters: [String: Any]) -> String? {
@@ -462,6 +690,63 @@ enum OtaFunctions {
             "url": downloadUrl,
             "version": releaseUuid,
             "current_version": releaseUuid
+        ])
+    }
+}
+
+/// Covers the app while an update downloads: a dimmed screen with a spinner
+/// and a line of text, presented over everything and with nothing to tap,
+/// so the user waits for it rather than carrying on in an app about to change.
+fileprivate final class DownloadProgressController: UIViewController {
+    private let message: String
+
+    init(message: String) {
+        self.message = message
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .overFullScreen
+        modalTransitionStyle = .crossDissolve
+        isModalInPresentation = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = UIColor.black.withAlphaComponent(0.4)
+        view.accessibilityViewIsModal = true
+
+        let card = UIVisualEffectView(effect: UIBlurEffect(style: .systemMaterial))
+        card.layer.cornerRadius = 14
+        card.clipsToBounds = true
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        let spinner = UIActivityIndicatorView(style: .large)
+        spinner.startAnimating()
+
+        let label = UILabel()
+        label.text = message
+        label.font = .preferredFont(forTextStyle: .headline)
+        label.textAlignment = .center
+        label.numberOfLines = 0
+
+        let stack = UIStackView(arrangedSubviews: [spinner, label])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        card.contentView.addSubview(stack)
+        view.addSubview(card)
+
+        NSLayoutConstraint.activate([
+            card.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            card.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            card.widthAnchor.constraint(greaterThanOrEqualToConstant: 200),
+            card.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -64),
+            stack.topAnchor.constraint(equalTo: card.contentView.topAnchor, constant: 24),
+            stack.bottomAnchor.constraint(equalTo: card.contentView.bottomAnchor, constant: -24),
+            stack.leadingAnchor.constraint(equalTo: card.contentView.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: card.contentView.trailingAnchor, constant: -24)
         ])
     }
 }

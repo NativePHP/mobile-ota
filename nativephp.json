@@ -24,7 +24,7 @@
             "name": "Ota.Check",
             "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Check",
             "ios": "OtaFunctions.Check",
-            "description": "Ask Bifrost GET /api/apps/{uuid}/ota whether an update is available"
+            "description": "Ask Bifrost GET /api/v1/apps/{project}/{arc}/{fingerprint} whether a newer release is waiting for this shell"
         },
         {
             "name": "Ota.Download",
@@ -54,7 +54,7 @@
             "name": "Ota.Prompt",
             "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Prompt",
             "ios": "OtaFunctions.Prompt",
-            "description": "Native yes/no dialog when an update is available"
+            "description": "Check in the background and, when a release is waiting, ask Later / Update once the app is on screen"
         }
     ],
     "android": {

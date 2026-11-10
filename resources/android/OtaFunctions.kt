@@ -1,14 +1,24 @@
 package com.nativephp.plugins.mobile_ota
 
-import android.app.AlertDialog
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import android.content.SharedPreferences
-import androidx.fragment.app.FragmentActivity
 import com.nativephp.mobile.bridge.BridgeError
 import com.nativephp.mobile.bridge.BridgeFunction
 import com.nativephp.mobile.bridge.BridgeResponse
+import com.nativephp.mobile.utils.NativeActionCoordinator
+import com.nativephp.mobile.utils.NativeActions
+import android.app.AlertDialog
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
+import androidx.lifecycle.Lifecycle
+import androidx.fragment.app.FragmentActivity
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -147,7 +157,17 @@ object OtaFunctions {
             return runCatching {
                 backupPendingIfPresent(context)
                 val pending = pendingZip(context)
-                val bytes = URL(url).openStream().use { it.readBytes() }
+                // Timeouts, so a stalled connection fails rather than holding
+                // the prompt's progress dialog up forever.
+                val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 15000
+                    readTimeout = 30000
+                }
+                val bytes = try {
+                    connection.inputStream.use { it.readBytes() }
+                } finally {
+                    connection.disconnect()
+                }
 
                 // A payload that does not match what the server described is not
                 // the release we were offered, so it never reaches the location
@@ -262,34 +282,265 @@ object OtaFunctions {
         }
     }
 
+    /**
+     * Checks in the background and, when a release is waiting, asks Later /
+     * Update once the activity is in the foreground. The answer goes back to
+     * PHP as the event PHP named; Update is then downloaded here, behind a
+     * progress dialog the user cannot dismiss, so nothing blocks the request
+     * that asked.
+     */
     class Prompt(private val activity: FragmentActivity) : BridgeFunction {
         override fun execute(parameters: Map<String, Any>): Map<String, Any> {
-            val check = checkForUpdate(activity, parameters)
-            val data = check["data"] as? Map<*, *>
-            val available = data?.get("available") == true
-            if (!available) {
-                return BridgeResponse.success(mapOf("available" to false, "accepted" to false))
+            val title = parameters["title"] as? String ?: "Update available"
+            val message = parameters["message"] as? String ?: ""
+            val buttons = when (val raw = parameters["buttons"]) {
+                is JSONArray -> (0 until raw.length()).map { raw.optString(it) }
+                is List<*> -> raw.mapNotNull { it as? String }
+                else -> listOf("Later", "Update")
+            }.filter { it.isNotEmpty() }
+            val id = parameters["id"] as? String
+            val event = parameters["event"] as? String
+
+            // Once per process. PHP boots more than once per launch (a
+            // runtime reboot, the queue worker, classic mode per request) and
+            // asks every time, so the answer to "have we asked" lives here.
+            if (!claimPrompt()) {
+                return BridgeResponse.success(mapOf("scheduled" to false, "reason" to "already asked"))
             }
-            var accepted = false
-            activity.runOnUiThread {
-                AlertDialog.Builder(activity)
-                    .setTitle("Update available")
-                    .setMessage("Download and apply this OTA update?")
-                    .setPositiveButton("Update") { _, _ -> accepted = true }
-                    .setNegativeButton("Later", null)
-                    .show()
+
+            Thread {
+                // Core returns bridge data unwrapped; older cores wrapped it
+                // in "data". Read either so the prompt shows on both.
+                val check = checkForUpdate(activity, parameters)
+                val data = check["data"] as? Map<*, *> ?: check
+                if (data["available"] != true) {
+                    return@Thread
+                }
+
+                // Already downloaded and waiting for the next launch.
+                if (pendingHolds(activity, data["release"] as? String ?: "")) {
+                    return@Thread
+                }
+
+                // Never offer what the download would refuse.
+                if (predatesShell(data["published_at"] as? String, parameters["shell_built_at"] as? String)) {
+                    return@Thread
+                }
+
+                whenInForeground(activity, attemptsLeft = 120) {
+                    NativeActions.showAlert(
+                        activity,
+                        title,
+                        message,
+                        buttons.toTypedArray(),
+                        buttons.mapIndexed { index, _ -> if (index == 0) "cancel" else "default" }.toTypedArray()
+                    ) { index, label ->
+                        if (!event.isNullOrBlank()) {
+                            val payload = JSONObject().put("index", index).put("label", label)
+                            if (id != null) payload.put("id", id)
+                            NativeActionCoordinator.dispatchEvent(activity, event, payload.toString())
+                        }
+                        // The second button takes the update, and it is
+                        // fetched right here behind a progress dialog. PHP
+                        // only hears how it went.
+                        if (index == 1) {
+                            downloadWithProgress(activity, parameters)
+                        }
+                    }
+                }
+            }.start()
+
+            return BridgeResponse.success(mapOf("scheduled" to true))
+        }
+    }
+
+    /**
+     * Runs on the main thread once the activity is resumed, trying again every
+     * half second. PHP boots before the activity is on screen, and a dialog
+     * shown then is lost.
+     */
+    private fun whenInForeground(activity: FragmentActivity, attemptsLeft: Int, block: () -> Unit) {
+        Handler(Looper.getMainLooper()).post {
+            if (activity.isFinishing || activity.isDestroyed) return@post
+            if (activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                try {
+                    block()
+                } catch (e: Exception) {
+                    Log.e("OtaFunctions.Prompt", "Could not show the update prompt: ${e.message}", e)
+                }
+                return@post
             }
-            val currentVersion = (data?.get("current_version") as? String)
-                ?: (data?.get("version") as? String)
-                ?: ""
-            return BridgeResponse.success(mapOf(
-                "available" to true,
-                "accepted" to accepted,
-                "version" to currentVersion,
-                "current_version" to currentVersion,
-                "download_url" to (data?.get("download_url") ?: ""),
-                "url" to (data?.get("url") ?: data?.get("download_url") ?: "")
-            ))
+            if (attemptsLeft > 0) {
+                Handler(Looper.getMainLooper()).postDelayed({
+                    whenInForeground(activity, attemptsLeft - 1, block)
+                }, 500)
+            }
+        }
+    }
+
+    /**
+     * Update was tapped (main thread): show a progress dialog that cannot be
+     * cancelled, download the release, then dismiss it and say how it went,
+     * to the user (ready, or why it failed) and to PHP.
+     */
+    private fun downloadWithProgress(activity: FragmentActivity, parameters: Map<String, Any>) {
+        val progress = parameters["progress"] as? String ?: "Downloading update…"
+        val failedTitle = parameters["failed_title"] as? String ?: "Couldn't download the update"
+        val readyTitle = parameters["ready_title"] as? String ?: "Update ready"
+        val readyMessage = parameters["ready_message"] as? String ?: "Close and reopen the app to finish updating."
+        val downloadedEvent = parameters["downloaded_event"] as? String
+        val failedEvent = parameters["failed_event"] as? String
+
+        val dialog = try {
+            progressDialog(activity, progress).also { it.show() }
+        } catch (e: Exception) {
+            Log.e("OtaFunctions.Prompt", "Could not show download progress: ${e.message}", e)
+            null
+        }
+
+        Thread {
+            val result = runCatching { fetchOffered(activity, parameters) }
+                .getOrElse { mapOf("success" to false, "error" to (it.message ?: "Download failed.")) }
+            val succeeded = result["success"] == true
+            val reason = failureReason(result)
+
+            Handler(Looper.getMainLooper()).post {
+                runCatching { dialog?.dismiss() }
+                if (succeeded) {
+                    if (!downloadedEvent.isNullOrBlank()) {
+                        NativeActionCoordinator.dispatchEvent(
+                            activity,
+                            downloadedEvent,
+                            JSONObject().put("version", result["version"] as? String ?: "").toString()
+                        )
+                    }
+                    // Nothing restarts the app: the update is applied the
+                    // next time the user opens it, so tell them that.
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        runCatching {
+                            AlertDialog.Builder(activity)
+                                .setTitle(readyTitle)
+                                .setMessage(readyMessage)
+                                .setPositiveButton("OK", null)
+                                .show()
+                        }
+                    }
+                    return@post
+                }
+                if (!failedEvent.isNullOrBlank()) {
+                    NativeActionCoordinator.dispatchEvent(
+                        activity,
+                        failedEvent,
+                        JSONObject().put("stage", "download").put("message", reason).toString()
+                    )
+                }
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    runCatching {
+                        AlertDialog.Builder(activity)
+                            .setTitle(failedTitle)
+                            .setMessage(reason)
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun progressDialog(activity: FragmentActivity, message: String): AlertDialog {
+        val density = activity.resources.displayMetrics.density
+        val padding = (24 * density).toInt()
+        val layout = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(padding, padding, padding, padding)
+            addView(ProgressBar(activity).apply { isIndeterminate = true })
+            addView(TextView(activity).apply {
+                text = message
+                textSize = 16f
+                setPadding(padding, 0, 0, 0)
+            })
+        }
+        return AlertDialog.Builder(activity)
+            .setView(layout)
+            .setCancelable(false)
+            .create()
+            .apply { setCanceledOnTouchOutside(false) }
+    }
+
+    /**
+     * Asks the lane again, because the download URL is signed and may have
+     * expired while the dialog waited for an answer, then queues what it
+     * offers through Ota.Download's own code.
+     */
+    private fun fetchOffered(context: Context, parameters: Map<String, Any>): Map<String, Any> {
+        val check = checkForUpdate(context, parameters)
+        val offered = check["data"] as? Map<*, *> ?: check
+        val url = offered["download_url"] as? String ?: ""
+        val release = offered["release"] as? String ?: ""
+
+        if (offered["available"] != true || url.isBlank() || release.isBlank()) {
+            return mapOf("success" to false, "error" to (offered["reason"] as? String ?: "The update is no longer available."))
+        }
+        if (predatesShell(offered["published_at"] as? String, parameters["shell_built_at"] as? String)) {
+            return mapOf("success" to false, "error" to "That release is older than the installed app.")
+        }
+
+        val downloadParameters = mutableMapOf<String, Any>(
+            "url" to url,
+            "version" to release,
+            "release" to release
+        )
+        for (key in listOf("sha256", "size", "commit", "published_at", "signature", "key_id")) {
+            offered[key]?.let { downloadParameters[key] = it }
+        }
+        // Download refuses bytes Bifrost didn't sign for this shell, so it
+        // needs the identity the check asked with.
+        for (key in listOf("project", "arc", "fingerprint", "algorithm")) {
+            parameters[key]?.let { downloadParameters[key] = it }
+        }
+        return Download(context).execute(downloadParameters) + ("version" to release)
+    }
+
+    private fun failureReason(result: Map<String, Any>): String =
+        result["error"] as? String ?: result["message"] as? String ?: "Download failed."
+
+    /**
+     * A release published before this shell was built is already inside it.
+     * The server applies the same rule; PHP's downloadAndApply does too.
+     */
+    private fun predatesShell(publishedAt: String?, builtAt: String?): Boolean {
+        val published = parseDate(publishedAt) ?: return false
+        val built = parseDate(builtAt) ?: return false
+        return !published.isAfter(built)
+    }
+
+    private fun parseDate(value: String?): java.time.Instant? {
+        if (value.isNullOrBlank()) return null
+        return try {
+            java.time.OffsetDateTime.parse(value).toInstant()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private val prompted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** True the first time it is called in this process, false after. */
+    private fun claimPrompt(): Boolean = prompted.compareAndSet(false, true)
+
+    /**
+     * Whether the queued payload is already this release: pending.zip is there
+     * and the pending.json written after it names the same release.
+     */
+    private fun pendingHolds(context: Context, release: String): Boolean {
+        if (release.isEmpty() || !pendingZip(context).isFile) return false
+        val manifest = pendingManifest(context)
+        if (!manifest.isFile) return false
+        return try {
+            JSONObject(manifest.readText()).optString("release_uuid") == release
+        } catch (_: Exception) {
+            false
         }
     }
 

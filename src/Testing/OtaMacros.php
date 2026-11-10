@@ -10,7 +10,7 @@ use PHPUnit\Framework\Assert;
  * FakeBridge macros so app tests read in update terms instead of raw
  * bridge method strings:
  *
- *     Native::fakeBridge()->withOtaUpdate('3.0.13.0.3', 'https://example.com/laravel_bundle.zip');
+ *     Native::fakeBridge()->withOtaUpdate('1.2.3', 'https://example.com/laravel_bundle.zip');
  *
  *     Native::test(Home::class)
  *         ->tap('Check OTA')
@@ -35,7 +35,7 @@ class OtaMacros
          * Script an available OTA. $version is the Bifrost current_version
          * string; $url is the download_url the native Check/Download use.
          */
-        FakeBridge::macro('withOtaUpdate', function (string $version = '3.0.13.0.3', string $url = 'https://example.com/laravel_bundle.zip') {
+        FakeBridge::macro('withOtaUpdate', function (string $version = '1.2.3', string $url = 'https://example.com/laravel_bundle.zip') {
             return $this->respondTo('Ota.Check', [
                 'available' => true,
                 'upToDate' => false,

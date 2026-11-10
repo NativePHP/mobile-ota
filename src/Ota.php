@@ -7,11 +7,24 @@ use Nativephp\MobileOta\Events\UpdateApplied;
 use Nativephp\MobileOta\Events\UpdateAvailable;
 use Nativephp\MobileOta\Events\UpdateDownloaded;
 use Nativephp\MobileOta\Events\UpdateFailed;
+use Nativephp\MobileOta\Events\UpdatePromptAnswered;
 
 class Ota
 {
     /** The channels a release can be published to. Anything else is not an Arc. */
     private const ARCS = ['testing', 'staging', 'production'];
+
+    /** Correlates the prompt's answer with the prompt, among the app's own alerts. */
+    public const PROMPT_ID = 'nativephp-ota-update';
+
+    /** The prompt's buttons, in order. The second one takes the update. */
+    public const PROMPT_BUTTONS = ['Later', 'Update'];
+
+    /**
+     * Whether this runtime has already asked for the prompt. In the persistent
+     * runtime PHP boots once per launch, so this is once per launch.
+     */
+    private static bool $prompted = false;
 
     public function currentVersion(): int|string
     {
@@ -237,22 +250,57 @@ class Ota
         return true;
     }
 
+    /**
+     * Ask before updating. The check and the dialog both happen natively and
+     * in the background, so this returns straight away: the app is still
+     * launching when PHP boots, and a dialog raised then is dropped, so the
+     * native side waits until the app is on screen before asking. It asks at
+     * most once per launch, however many times PHP boots.
+     *
+     * Update is downloaded natively, behind a progress screen, and queued for
+     * the next launch. PHP hears about it as UpdatePromptAnswered, then
+     * UpdateDownloaded or UpdateFailed.
+     */
     public function prompt(): array
     {
         $identity = $this->identity();
 
-        $result = $this->call('Ota.Prompt', [
+        return $this->call('Ota.Prompt', [
             'endpoint' => config('nativephp-ota.endpoint'),
             'project' => $identity['project_uuid'],
+            'token' => config('nativephp-ota.token'),
             'arc' => $identity['arc'],
             'fingerprint' => $identity['shell_fingerprint'],
             'algorithm' => $identity['fingerprint_algorithm'],
             'release' => $identity['release_uuid'],
-            'token' => config('nativephp-ota.token'),
+            'shell_built_at' => (string) config('nativephp-ota.shell_built_at'),
             'version' => $this->currentVersion(),
-        ]);
+            'title' => 'Update available',
+            'message' => 'A new version of this app is ready. Download it now? It will be used the next time the app starts.',
+            'buttons' => self::PROMPT_BUTTONS,
+            'id' => self::PROMPT_ID,
+            'event' => UpdatePromptAnswered::class,
+            'progress' => 'Downloading update…',
+            'failed_title' => "Couldn't download the update",
+            'ready_title' => 'Update ready',
+            'ready_message' => 'Close and reopen the app to finish updating.',
+            'downloaded_event' => UpdateDownloaded::class,
+            'failed_event' => UpdateFailed::class,
+        ]) ?? ['scheduled' => false];
+    }
 
-        return $result ?? ['available' => false, 'accepted' => false];
+    /**
+     * Whether an answer took the update on this plugin's own prompt. The
+     * native side has already started the download by the time PHP hears it,
+     * so this only says what was chosen; "Later" leaves the release for the
+     * next launch to offer again.
+     */
+    public function answerPrompt(UpdatePromptAnswered $answer): array
+    {
+        return [
+            'accepted' => $answer->id === self::PROMPT_ID
+                && $answer->index === array_search('Update', self::PROMPT_BUTTONS, true),
+        ];
     }
 
     public function onLaunch(): void
@@ -260,13 +308,25 @@ class Ota
         $mode = config('nativephp-ota.mode', 'manual');
 
         if ($mode === 'prompt') {
-            $this->prompt();
+            $this->promptOnce();
         } elseif ($mode === 'silent') {
             $this->downloadAndApply(silent: true);
         }
     }
 
+    /**
+     * Once per runtime, which in the persistent runtime is once per launch.
+     */
+    private function promptOnce(): void
+    {
+        if (self::$prompted) {
+            return;
+        }
 
+        self::$prompted = true;
+
+        $this->prompt();
+    }
 
     /**
      * A release published before this shell was built is already inside it, so
