@@ -13,10 +13,66 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.KeyFactory
+import java.security.MessageDigest
+import java.security.Signature
+import java.security.spec.X509EncodedKeySpec
+import java.util.Base64
 
 object OtaFunctions {
     private const val PREFS = "nativephp_ota"
     private const val KEY_VERSION = "version"
+
+    /**
+     * Public keys Bifrost signs releases with, by key id: base64 DER
+     * SubjectPublicKeyInfo for ECDSA P-256. A new key is added here before
+     * Bifrost starts signing with it, and an old one is removed only once no
+     * shell still needs it.
+     */
+    val TRUSTED_KEYS: Map<String, String> = mapOf(
+        "bifrost-1" to "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAED11E2/gPpjpBp4/hnZbY0TNU+BcsaX21CqffqhMPFQ160Gp82uytF6n3H+IJbdapfmFQUEHKBY4XRmqOXgG40Q==",
+    )
+
+    const val SIGNED_MESSAGE_VERSION = "nativephp-ota-release-v1"
+
+    /**
+     * The exact text Bifrost signs. Built from this shell's identity and the
+     * downloaded bytes, so a release meant for another app, Arc or shell, or
+     * any other bytes, can't verify.
+     */
+    fun signedMessage(project: String, arc: String, fingerprint: String, algorithm: String, release: String, sha256: String, size: Int): String =
+        listOf(SIGNED_MESSAGE_VERSION, project, arc, fingerprint, algorithm, release, sha256, size.toString()).joinToString("\n")
+
+    fun isValidSignature(signature: String, keyId: String, message: String): Boolean = runCatching {
+        val encodedKey = TRUSTED_KEYS[keyId] ?: return false
+        val key = KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(Base64.getDecoder().decode(encodedKey)))
+        Signature.getInstance("SHA256withECDSA").run {
+            initVerify(key)
+            update(message.toByteArray(Charsets.UTF_8))
+            verify(Base64.getDecoder().decode(signature))
+        }
+    }.getOrDefault(false)
+
+    /** Why these bytes can't be installed, or null when Bifrost signed them. */
+    private fun signatureRefusal(bytes: ByteArray, parameters: Map<String, Any>): String? {
+        fun text(key: String): String = when (val value = parameters[key]) {
+            is String -> value
+            is Number -> value.toString()
+            else -> ""
+        }
+        val signature = text("signature")
+        val keyId = text("key_id")
+        val identity = listOf("project", "arc", "fingerprint", "algorithm", "release").map(::text)
+        if (signature.isBlank() || keyId.isBlank()) {
+            return "release is not signed"
+        }
+        if (identity.any { it.isBlank() }) {
+            return "missing project, arc, fingerprint, algorithm or release"
+        }
+        val sha256 = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        val message = signedMessage(identity[0], identity[1], identity[2], identity[3], identity[4], sha256, bytes.size)
+        return if (isValidSignature(signature, keyId, message)) null else "signature invalid"
+    }
 
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -108,6 +164,12 @@ object OtaFunctions {
                 val expectedSize = (parameters["size"] as? Number)?.toInt() ?: 0
                 if (expectedSize > 0 && bytes.size != expectedSize) {
                     return BridgeResponse.error(BridgeError.ExecutionFailed("size mismatch: expected $expectedSize, got ${bytes.size}"))
+                }
+                // Nothing reaches core unless Bifrost signed these exact bytes
+                // for this app, Arc and shell. The key is compiled into the
+                // shell, so no update can replace it.
+                signatureRefusal(bytes, parameters)?.let {
+                    return BridgeResponse.error(BridgeError.ExecutionFailed(it))
                 }
 
                 pending.writeBytes(bytes)
@@ -333,6 +395,8 @@ object OtaFunctions {
                 "size" to offered.optInt("size", 0),
                 "commit" to offered.optString("commit", ""),
                 "published_at" to offered.optString("published_at", ""),
+                "signature" to offered.optString("signature", ""),
+                "key_id" to offered.optString("key_id", ""),
                 "download_url" to downloadUrl,
                 "url" to downloadUrl,
                 "version" to releaseUuid,

@@ -162,6 +162,7 @@ class Ota
         }
 
         $version = $check['current_version'] ?? $check['version'] ?? '0';
+        $identity = $this->identity();
 
         $downloaded = $this->call('Ota.Download', [
             'url' => $url,
@@ -174,6 +175,14 @@ class Ota
             'size' => $check['size'] ?? null,
             'commit' => $check['commit'] ?? null,
             'published_at' => $check['published_at'] ?? null,
+            // The native side refuses the bytes unless Bifrost signed them for
+            // this exact app, Arc and shell, so it needs who this shell is.
+            'signature' => $check['signature'] ?? null,
+            'key_id' => $check['key_id'] ?? null,
+            'project' => $identity['project_uuid'],
+            'arc' => $identity['arc'],
+            'fingerprint' => $identity['shell_fingerprint'],
+            'algorithm' => $identity['fingerprint_algorithm'],
         ]);
 
         if (! $downloaded || empty($downloaded['success'])) {

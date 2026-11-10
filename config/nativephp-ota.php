@@ -28,7 +28,8 @@ return [
 
     'fingerprint_algorithm' => env('NATIVEPHP_OTA_FINGERPRINT_ALGORITHM', 1),
 
-    // Bifrost-hosted delivery is Hela and up. Point this at your own URL for BYO bucket.
+    // Written by Bifrost. Updates must be signed by Bifrost, so another server
+    // can't deliver them.
     'endpoint' => env('NATIVEPHP_OTA_ENDPOINT'),
 
     'token' => env('NATIVEPHP_OTA_TOKEN'),

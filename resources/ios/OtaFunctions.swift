@@ -106,6 +106,12 @@ enum OtaFunctions {
                 if let expected = (parameters["size"] as? NSNumber)?.intValue, expected > 0, body.count != expected {
                     return ["success": false, "error": "size mismatch: expected \(expected), got \(body.count)"]
                 }
+                // Nothing reaches core unless Bifrost signed these exact bytes
+                // for this app, Arc and shell. The key is compiled into the
+                // shell, so no update can replace it.
+                if let refusal = OtaFunctions.signatureRefusal(body: body, parameters: parameters) {
+                    return ["success": false, "error": refusal]
+                }
 
                 try body.write(to: OtaFunctions.pendingZip, options: .atomic)
 
@@ -234,6 +240,55 @@ enum OtaFunctions {
                 "needsUi": true
             ])
         }
+    }
+
+    /// Public keys Bifrost signs releases with, by key id: base64 DER
+    /// SubjectPublicKeyInfo for ECDSA P-256. A new key is added here before
+    /// Bifrost starts signing with it, and an old one is removed only once no
+    /// shell still needs it.
+    static let trustedKeys: [String: String] = [
+        "bifrost-1": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAED11E2/gPpjpBp4/hnZbY0TNU+BcsaX21CqffqhMPFQ160Gp82uytF6n3H+IJbdapfmFQUEHKBY4XRmqOXgG40Q==",
+    ]
+
+    static let signedMessageVersion = "nativephp-ota-release-v1"
+
+    /// The exact text Bifrost signs. Built from this shell's identity and the
+    /// downloaded bytes, so a release meant for another app, Arc or shell, or
+    /// any other bytes, can't verify.
+    static func signedMessage(project: String, arc: String, fingerprint: String, algorithm: String, release: String, sha256: String, size: Int) -> String {
+        return [signedMessageVersion, project, arc, fingerprint, algorithm, release, sha256, String(size)].joined(separator: "\n")
+    }
+
+    static func isValidSignature(_ signature: String, keyId: String, message: String) -> Bool {
+        guard let encodedKey = trustedKeys[keyId],
+              let keyData = Data(base64Encoded: encodedKey),
+              let key = try? P256.Signing.PublicKey(derRepresentation: keyData),
+              let signatureData = Data(base64Encoded: signature),
+              let ecdsa = try? P256.Signing.ECDSASignature(derRepresentation: signatureData) else {
+            return false
+        }
+        return key.isValidSignature(ecdsa, for: Data(message.utf8))
+    }
+
+    /// Why these bytes can't be installed, or nil when Bifrost signed them.
+    fileprivate static func signatureRefusal(body: Data, parameters: [String: Any]) -> String? {
+        func text(_ key: String) -> String {
+            if let s = parameters[key] as? String { return s }
+            if let n = parameters[key] as? NSNumber { return n.stringValue }
+            return ""
+        }
+        let signature = text("signature")
+        let keyId = text("key_id")
+        let identity = ["project", "arc", "fingerprint", "algorithm", "release"].map(text)
+        if signature.isEmpty || keyId.isEmpty {
+            return "release is not signed"
+        }
+        if identity.contains(where: { $0.isEmpty }) {
+            return "missing project, arc, fingerprint, algorithm or release"
+        }
+        let sha256 = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+        let message = signedMessage(project: identity[0], arc: identity[1], fingerprint: identity[2], algorithm: identity[3], release: identity[4], sha256: sha256, size: body.count)
+        return isValidSignature(signature, keyId: keyId, message: message) ? nil : "signature invalid"
     }
 
     fileprivate static func versionString(from parameters: [String: Any]) -> String? {
@@ -401,6 +456,8 @@ enum OtaFunctions {
             "size": size,
             "commit": commit,
             "published_at": publishedAt,
+            "signature": releaseBody["signature"] as? String ?? "",
+            "key_id": releaseBody["key_id"] as? String ?? "",
             "download_url": downloadUrl,
             "url": downloadUrl,
             "version": releaseUuid,
