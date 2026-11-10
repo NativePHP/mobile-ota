@@ -125,6 +125,34 @@ it('hands the download the checksum to verify before queueing', function () {
     ]);
 });
 
+it('hands the download the signature and the identity it must verify against', function () {
+    $this->bridge->respondTo('Ota.Check', [
+        'available' => true,
+        'upToDate' => false,
+        'release' => 'new-release',
+        'sha256' => str_repeat('d', 64),
+        'size' => 12009013,
+        'signature' => 'c2lnbmF0dXJl',
+        'key_id' => 'bifrost-1',
+        'download_url' => 'https://example.com/laravel_bundle.zip',
+        'url' => 'https://example.com/laravel_bundle.zip',
+    ]);
+    $this->bridge->respondTo('Ota.Download', ['success' => true, 'queued' => true]);
+    $this->bridge->respondTo('Ota.Apply', ['success' => true, 'queued' => true, 'applyOnNextBoot' => true]);
+
+    app(Ota::class)->downloadAndApply();
+
+    expect($this->bridge->callsTo('Ota.Download')[0]['params'])->toMatchArray([
+        'signature' => 'c2lnbmF0dXJl',
+        'key_id' => 'bifrost-1',
+        'project' => 'project-uuid',
+        'arc' => 'staging',
+        'fingerprint' => str_repeat('a', 64),
+        'algorithm' => '1',
+        'release' => 'new-release',
+    ]);
+});
+
 it('falls back to the payload manifest for the app it belongs to', function () {
     config(['nativephp-ota.project_uuid' => null]);
 
