@@ -1,10 +1,15 @@
 # NativePHP Mobile OTA
 
-Over-the-air updates for [NativePHP Mobile](https://nativephp.com) apps. Send a new version of your app's PHP code,
-views and assets straight to the phones it's installed on, without a store review.
+Over-the-air updates for [NativePHP Mobile](https://nativephp.com) apps, powered by
+[Bifrost](https://bifrost.nativephp.com). Send a new version of your app's PHP code, views and assets straight to the
+phones it's installed on, without a store review.
 
-This plugin is the part that runs in your app. It checks for an update, downloads it, and hands it to NativePHP to
-apply the next time the app starts. Updates are built and published by [Bifrost](https://bifrost.nativephp.com). See
+> **This plugin only works with Bifrost.** Bifrost builds your app, publishes each update, and signs it. The app
+> refuses any update that Bifrost didn't sign for that exact app, so you can't point the plugin at your own server.
+> You need a Bifrost project with OTA enabled and a store build made by Bifrost.
+
+This plugin is the part that runs in your app. It asks Bifrost for an update, downloads it, checks the signature, and
+hands it to NativePHP to apply the next time the app starts. See
 [OTA Updates](https://bifrost.nativephp.com/docs/mobile/builds/ota) in the Bifrost docs for sending them.
 
 OTA is driven entirely from your app's PHP, through the `Ota` facade. There is no JavaScript or web API for it: a page
@@ -24,6 +29,7 @@ build.
 
 ## Requirements
 
+- A [Bifrost](https://bifrost.nativephp.com) project, with the store build made by Bifrost
 - `nativephp/mobile` 4.6.1 or later
 - iOS and Android
 
@@ -107,6 +113,8 @@ Each step dispatches a Laravel event you can listen for:
 
 ## Safety
 
+- Every update is signed by Bifrost. The app checks the signature against a key built into its native code, and
+  refuses an update that is unsigned, signed by anyone else, or signed for a different app, Arc or native setup.
 - The app never installs an update older than the code it was built with, even if it's offered one.
 - A download whose checksum or size doesn't match what Bifrost published is discarded.
 - The phone checks it's online before asking for an update.
