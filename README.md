@@ -81,15 +81,6 @@ offline or the check fails, `available` is `false` and `reason` says why.
 restarts your app. The update is applied the next time the app starts, so you might tell the user to restart to
 finish updating.
 
-### Rolling back
-
-```php
-Ota::rollback();
-```
-
-Puts the previously downloaded update back, to be applied the next time the app starts. It returns `false` if there's
-nothing to roll back to.
-
 ### Status
 
 ```php
