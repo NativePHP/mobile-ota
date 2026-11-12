@@ -99,7 +99,6 @@ Each step dispatches a Laravel event you can listen for:
 | `Nativephp\MobileOta\Events\UpdateAvailable` | A check found an update. |
 | `Nativephp\MobileOta\Events\UpdateDownloaded` | An update was downloaded. |
 | `Nativephp\MobileOta\Events\UpdateApplied` | An update was queued for the next start. |
-| `Nativephp\MobileOta\Events\RolledBack` | A rollback was queued for the next start. |
 | `Nativephp\MobileOta\Events\UpdateFailed` | A check, download, apply or rollback failed. `$stage` says which, and `$message` says why. |
 
 ## Safety
