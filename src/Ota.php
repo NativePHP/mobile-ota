@@ -26,6 +26,9 @@ class Ota
      */
     private static bool $prompted = false;
 
+    /** Whether this runtime has already started the silent update. Once per launch, as above. */
+    private static bool $updatingSilently = false;
+
     public function currentVersion(): int|string
     {
         $status = $this->status();
@@ -126,21 +129,7 @@ class Ota
 
     public function check(): array
     {
-        $identity = $this->identity();
-
-        $result = $this->call('Ota.Check', [
-            'endpoint' => config('nativephp-ota.endpoint'),
-            'project' => $identity['project_uuid'],
-            'token' => config('nativephp-ota.token'),
-            'arc' => $identity['arc'],
-            'fingerprint' => $identity['shell_fingerprint'],
-            'algorithm' => $identity['fingerprint_algorithm'],
-            'release' => $identity['release_uuid'],
-            // What this shell shipped with: a release published before it is
-            // already inside the app, and installing it would go backwards.
-            'shell_built_at' => (string) config('nativephp-ota.shell_built_at'),
-            'version' => $this->currentVersion(),
-        ]);
+        $result = $this->call('Ota.Check', $this->lane());
 
         if (! $result) {
             UpdateFailed::dispatch('check', 'Native OTA check failed or is unavailable off-device.');
@@ -263,18 +252,8 @@ class Ota
      */
     public function prompt(): array
     {
-        $identity = $this->identity();
-
         return $this->call('Ota.Prompt', [
-            'endpoint' => config('nativephp-ota.endpoint'),
-            'project' => $identity['project_uuid'],
-            'token' => config('nativephp-ota.token'),
-            'arc' => $identity['arc'],
-            'fingerprint' => $identity['shell_fingerprint'],
-            'algorithm' => $identity['fingerprint_algorithm'],
-            'release' => $identity['release_uuid'],
-            'shell_built_at' => (string) config('nativephp-ota.shell_built_at'),
-            'version' => $this->currentVersion(),
+            ...$this->lane(),
             'title' => 'Update available',
             'message' => 'A new version of this app is ready. Download it now? It will be used the next time the app starts.',
             'buttons' => self::PROMPT_BUTTONS,
@@ -303,6 +282,29 @@ class Ota
         ];
     }
 
+    /**
+     * Check, download and queue a waiting release with nothing on screen.
+     * All of it happens natively and in the background, so this returns
+     * straight away: PHP boots before the first screen, and doing the work
+     * here would hold the launch up for as long as the network takes. It
+     * runs at most once per launch, however many times PHP boots.
+     *
+     * The download passes the same checks downloadAndApply() relies on: the
+     * signature, checksum and size, and never a release older than the
+     * shell. PHP hears how it went as UpdateAvailable, UpdateDownloaded and
+     * UpdateApplied, or UpdateFailed.
+     */
+    public function updateSilently(): array
+    {
+        return $this->call('Ota.Silent', [
+            ...$this->lane(),
+            'available_event' => UpdateAvailable::class,
+            'downloaded_event' => UpdateDownloaded::class,
+            'applied_event' => UpdateApplied::class,
+            'failed_event' => UpdateFailed::class,
+        ]) ?? ['scheduled' => false];
+    }
+
     public function onLaunch(): void
     {
         $mode = config('nativephp-ota.mode', 'manual');
@@ -310,7 +312,7 @@ class Ota
         if ($mode === 'prompt') {
             $this->promptOnce();
         } elseif ($mode === 'silent') {
-            $this->downloadAndApply(silent: true);
+            $this->updateSilentlyOnce();
         }
     }
 
@@ -326,6 +328,45 @@ class Ota
         self::$prompted = true;
 
         $this->prompt();
+    }
+
+    /**
+     * Once per runtime, which in the persistent runtime is once per launch.
+     */
+    private function updateSilentlyOnce(): void
+    {
+        if (self::$updatingSilently) {
+            return;
+        }
+
+        self::$updatingSilently = true;
+
+        $this->updateSilently();
+    }
+
+    /**
+     * Who is asking, which every request to the lane carries: the app, its
+     * Arc, the shell it was built as and the release it already holds.
+     *
+     * @return array<string, mixed>
+     */
+    private function lane(): array
+    {
+        $identity = $this->identity();
+
+        return [
+            'endpoint' => config('nativephp-ota.endpoint'),
+            'project' => $identity['project_uuid'],
+            'token' => config('nativephp-ota.token'),
+            'arc' => $identity['arc'],
+            'fingerprint' => $identity['shell_fingerprint'],
+            'algorithm' => $identity['fingerprint_algorithm'],
+            'release' => $identity['release_uuid'],
+            // What this shell shipped with: a release published before it is
+            // already inside the app, and installing it would go backwards.
+            'shell_built_at' => (string) config('nativephp-ota.shell_built_at'),
+            'version' => $this->currentVersion(),
+        ];
     }
 
     /**

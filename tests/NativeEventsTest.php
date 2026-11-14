@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Event;
 use Native\Mobile\Edge\NativeComponent;
 use Native\Mobile\Events\Concerns\BroadcastsGlobally;
 use Native\Mobile\Events\Contracts\DispatchableFromNative;
+use Nativephp\MobileOta\Events\UpdateApplied;
+use Nativephp\MobileOta\Events\UpdateAvailable;
 use Nativephp\MobileOta\Events\UpdateDownloaded;
 use Nativephp\MobileOta\Events\UpdateFailed;
 use Nativephp\MobileOta\Events\UpdatePromptAnswered;
@@ -19,7 +21,9 @@ uses(TestCase::class);
 
 $sent = [
     'the prompt answer' => [UpdatePromptAnswered::class, ['index' => 1, 'label' => 'Update', 'id' => 'nativephp-ota-update']],
+    'a release found by a silent check' => [UpdateAvailable::class, ['version' => 'new-release']],
     'a finished download' => [UpdateDownloaded::class, ['version' => 'new-release']],
+    'a silent update queued' => [UpdateApplied::class, ['version' => 'new-release']],
     'a failed download' => [UpdateFailed::class, ['stage' => 'download', 'message' => 'checksum mismatch']],
 ];
 

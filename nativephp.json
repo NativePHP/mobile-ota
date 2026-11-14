@@ -55,6 +55,12 @@
             "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Prompt",
             "ios": "OtaFunctions.Prompt",
             "description": "Check in the background and, when a release is waiting, ask Later / Update once the app is on screen"
+        },
+        {
+            "name": "Ota.Silent",
+            "android": "com.nativephp.plugins.mobile_ota.OtaFunctions.Silent",
+            "ios": "OtaFunctions.Silent",
+            "description": "Check, download and queue a waiting release in the background, once per process, with nothing on screen"
         }
     ],
     "android": {

@@ -55,7 +55,7 @@ Set `NATIVEPHP_OTA_MODE` in your `.env`:
 |---|---|
 | `manual` (default) | Nothing happens on its own. Your app decides when to check, using the methods below. |
 | `prompt` | Once per launch, the app checks for an update in the background and, once it's on screen, asks **Later** or **Update**. **Update** downloads it behind a progress screen, then tells the user to close and reopen the app (you'll get `UpdateDownloaded` or `UpdateFailed`). The app is never restarted for them; the update is applied the next time it starts. **Later** asks again on the next launch. |
-| `silent` | The app checks for updates and downloads them automatically. A downloaded update is applied the next time the app starts. |
+| `silent` | Once per launch, the app checks for an update in the background and downloads it, with nothing on screen. Starting the app never waits for it. You'll get `UpdateDownloaded` and `UpdateApplied`, or `UpdateFailed`. A downloaded update is applied the next time the app starts. If the app is closed before the download finishes, the next launch tries again. |
 
 The mode is part of the app, so set it before you ship the store build that should use it. An update can change it
 for the builds that install that update.
@@ -100,6 +100,9 @@ Each step dispatches a Laravel event you can listen for:
 | `Nativephp\MobileOta\Events\UpdateDownloaded` | An update was downloaded. |
 | `Nativephp\MobileOta\Events\UpdateApplied` | An update was queued for the next start. |
 | `Nativephp\MobileOta\Events\UpdateFailed` | A check, download, apply or rollback failed. `$stage` says which, and `$message` says why. |
+
+In `silent` mode the work happens natively in the background, so these events arrive a little after launch rather
+than during it. `UpdateAvailable` from a silent check carries the version only; its `$url` is `null`.
 
 ## Safety
 
