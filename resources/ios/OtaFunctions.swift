@@ -287,6 +287,26 @@ enum OtaFunctions {
         }
     }
 
+    /// Silent mode: checks, downloads and queues a waiting release with
+    /// nothing on screen. PHP asks while it boots, before the first screen
+    /// is up, so all of it happens on a background queue and this returns
+    /// straight away. How it went goes back to PHP as the events PHP named.
+    class Silent: BridgeFunction {
+        func execute(parameters: [String: Any]) throws -> [String: Any] {
+            // Once per process, for the same reason as the prompt: PHP boots
+            // more than once per launch and asks every time.
+            guard OtaFunctions.claimSilent() else {
+                return BridgeResponse.success(data: ["scheduled": false, "reason": "already started"])
+            }
+
+            DispatchQueue.global(qos: .utility).async {
+                OtaFunctions.updateSilently(parameters: parameters)
+            }
+
+            return BridgeResponse.success(data: ["scheduled": true])
+        }
+    }
+
     /// Public keys Bifrost signs releases with, by key id: base64 DER
     /// SubjectPublicKeyInfo for ECDSA P-256. A new key is added here before
     /// Bifrost starts signing with it, and an old one is removed only once no
@@ -336,15 +356,25 @@ enum OtaFunctions {
         return isValidSignature(signature, keyId: keyId, message: message) ? nil : "signature invalid"
     }
 
-    private static let promptLock = NSLock()
+    private static let claimLock = NSLock()
     private static var prompted = false
+    private static var updatedSilently = false
 
     /// True the first time it is called in this process, false after.
     fileprivate static func claimPrompt() -> Bool {
-        promptLock.lock()
-        defer { promptLock.unlock() }
+        claimLock.lock()
+        defer { claimLock.unlock() }
         if prompted { return false }
         prompted = true
+        return true
+    }
+
+    /// True the first time it is called in this process, false after.
+    fileprivate static func claimSilent() -> Bool {
+        claimLock.lock()
+        defer { claimLock.unlock() }
+        if updatedSilently { return false }
+        updatedSilently = true
         return true
     }
 
@@ -450,7 +480,12 @@ enum OtaFunctions {
     /// offers the same way Ota.Download does.
     fileprivate static func fetchOffered(parameters: [String: Any]) -> [String: Any] {
         let check = (try? checkForUpdate(parameters: parameters)) ?? [:]
-        let offered = (check["data"] as? [String: Any]) ?? check
+        return downloadOffered((check["data"] as? [String: Any]) ?? check, parameters: parameters)
+    }
+
+    /// Queues the release a check offered, through Ota.Download's own code,
+    /// unless it predates this shell.
+    fileprivate static func downloadOffered(_ offered: [String: Any], parameters: [String: Any]) -> [String: Any] {
         let url = offered["download_url"] as? String ?? ""
         let release = offered["release"] as? String ?? ""
 
@@ -478,6 +513,50 @@ enum OtaFunctions {
         ])
         result["version"] = release
         return result
+    }
+
+    /// Ota.Silent's work, off the main thread: the check, download and queue
+    /// Ota::downloadAndApply() does from PHP, with each step reported back
+    /// as an event instead of returned.
+    fileprivate static func updateSilently(parameters: [String: Any]) {
+        func report(_ key: String, _ payload: [String: Any]) {
+            if let event = parameters[key] as? String, !event.isEmpty {
+                LaravelBridge.shared.send?(event, payload)
+            }
+        }
+
+        // Up to date, offline, or the lane couldn't be asked. PHP's own
+        // check reports none of these as a failure either; the next launch
+        // asks again.
+        guard let check = try? checkForUpdate(parameters: parameters) else {
+            return
+        }
+        let offered = (check["data"] as? [String: Any]) ?? check
+        guard offered["available"] as? Bool == true else {
+            return
+        }
+        let release = offered["release"] as? String ?? ""
+
+        // Already downloaded and waiting for the next launch.
+        if pendingHolds(release: release) {
+            return
+        }
+
+        report("available_event", ["version": release])
+
+        let downloaded = downloadOffered(offered, parameters: parameters)
+        guard downloaded["success"] as? Bool == true else {
+            report("failed_event", ["stage": "download", "message": failureReason(downloaded)])
+            return
+        }
+        report("downloaded_event", ["version": release])
+
+        let applied = (try? Apply().execute(parameters: ["version": release])) ?? [:]
+        if applied["success"] as? Bool == true {
+            report("applied_event", ["version": release])
+        } else {
+            report("failed_event", ["stage": "apply", "message": applied["message"] as? String ?? "Apply failed."])
+        }
     }
 
     fileprivate static func failureReason(_ result: [String: Any]) -> String {

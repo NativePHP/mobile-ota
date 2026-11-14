@@ -355,6 +355,87 @@ object OtaFunctions {
     }
 
     /**
+     * Silent mode: checks, downloads and queues a waiting release with nothing
+     * on screen. PHP asks while it boots, before the first screen is up, so
+     * all of it happens on a background thread and this returns straight
+     * away. How it went goes back to PHP as the events PHP named.
+     */
+    class Silent(private val activity: FragmentActivity) : BridgeFunction {
+        override fun execute(parameters: Map<String, Any>): Map<String, Any> {
+            // Once per process, for the same reason as the prompt: PHP boots
+            // more than once per launch and asks every time.
+            if (!claimSilent()) {
+                return BridgeResponse.success(mapOf("scheduled" to false, "reason" to "already started"))
+            }
+
+            Thread {
+                // Never compete with the launch it was started from.
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                try {
+                    updateSilently(activity, parameters)
+                } catch (e: Exception) {
+                    Log.e("OtaFunctions.Silent", "Silent update stopped: ${e.message}", e)
+                }
+            }.start()
+
+            return BridgeResponse.success(mapOf("scheduled" to true))
+        }
+    }
+
+    /**
+     * Ota.Silent's work, off the main thread: the check, download and queue
+     * Ota::downloadAndApply() does from PHP, with each step reported back as
+     * an event instead of returned.
+     */
+    private fun updateSilently(activity: FragmentActivity, parameters: Map<String, Any>) {
+        // Files and preferences only need the app, which outlives the activity.
+        val context = activity.applicationContext
+
+        fun report(key: String, payload: JSONObject) {
+            val event = parameters[key] as? String
+            if (event.isNullOrBlank()) return
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    NativeActionCoordinator.dispatchEvent(activity, event, payload.toString())
+                } catch (e: Exception) {
+                    Log.e("OtaFunctions.Silent", "Could not report $event: ${e.message}", e)
+                }
+            }
+        }
+
+        // Up to date, offline, or the lane couldn't be asked. PHP's own check
+        // reports none of these as a failure either; the next launch asks again.
+        val check = checkForUpdate(context, parameters)
+        val offered = check["data"] as? Map<*, *> ?: check
+        if (offered["available"] != true) {
+            return
+        }
+        val release = offered["release"] as? String ?: ""
+
+        // Already downloaded and waiting for the next launch.
+        if (pendingHolds(context, release)) {
+            return
+        }
+
+        report("available_event", JSONObject().put("version", release))
+
+        val downloaded = runCatching { downloadOffered(context, offered, parameters) }
+            .getOrElse { mapOf("success" to false, "error" to (it.message ?: "Download failed.")) }
+        if (downloaded["success"] != true) {
+            report("failed_event", JSONObject().put("stage", "download").put("message", failureReason(downloaded)))
+            return
+        }
+        report("downloaded_event", JSONObject().put("version", release))
+
+        val applied = Apply(context).execute(mapOf("version" to release))
+        if (applied["success"] == true) {
+            report("applied_event", JSONObject().put("version", release))
+        } else {
+            report("failed_event", JSONObject().put("stage", "apply").put("message", applied["message"] as? String ?: "Apply failed."))
+        }
+    }
+
+    /**
      * Runs on the main thread once the activity is resumed, trying again every
      * half second. PHP boots before the activity is on screen, and a dialog
      * shown then is lost.
@@ -475,7 +556,14 @@ object OtaFunctions {
      */
     private fun fetchOffered(context: Context, parameters: Map<String, Any>): Map<String, Any> {
         val check = checkForUpdate(context, parameters)
-        val offered = check["data"] as? Map<*, *> ?: check
+        return downloadOffered(context, check["data"] as? Map<*, *> ?: check, parameters)
+    }
+
+    /**
+     * Queues the release a check offered, through Ota.Download's own code,
+     * unless it predates this shell.
+     */
+    private fun downloadOffered(context: Context, offered: Map<*, *>, parameters: Map<String, Any>): Map<String, Any> {
         val url = offered["download_url"] as? String ?: ""
         val release = offered["release"] as? String ?: ""
 
@@ -528,6 +616,11 @@ object OtaFunctions {
 
     /** True the first time it is called in this process, false after. */
     private fun claimPrompt(): Boolean = prompted.compareAndSet(false, true)
+
+    private val updatedSilently = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** True the first time it is called in this process, false after. */
+    private fun claimSilent(): Boolean = updatedSilently.compareAndSet(false, true)
 
     /**
      * Whether the queued payload is already this release: pending.zip is there
